@@ -1,3 +1,4 @@
 .pio/
 include/secrets.h
 .venv/
+!include/secrets.h.example
