@@ -5,7 +5,8 @@
 //   - Heim-WLAN: Telnet auf Port 23 nur von ERLAUBT[] (siehe unten).
 //   - Heim-WLAN länger als NOTFALL_NACH_MS weg: Notfall-WLAN (WPA2, 1 Gerät), Telnet unter 192.168.4.1:23.
 //     Ist das Heim-WLAN wieder da und kein Gerät im Notfall-WLAN, geht das Notfall-WLAN wieder aus.
-//   - Eine Telnet-Sitzung gleichzeitig, Trennung nach SITZUNG_LEERLAUF_MS ohne Eingabe.
+//   - Eine Telnet-Sitzung gleichzeitig; eine neue (erlaubte) Verbindung übernimmt und trennt die alte.
+//     Trennung nach SITZUNG_LEERLAUF_MS ohne Eingabe.
 //   - Keine Weboberfläche. Update über das WLAN (ArduinoOTA, Port 8266) nur mit OTA_PASSWORT,
 //     erstes Flashen per USB (siehe README.md).
 //   - Auf die serielle Leitung wird NUR weitergeleitet, nie selbst etwas ausgegeben (der Pi würde es
@@ -97,9 +98,12 @@ static void wlan_pflegen() {
 static void sitzung_pflegen() {
   if (server.hasClient()) {
     WiFiClient neu = server.accept();
-    if (sitzung.connected() || !erlaubt(neu.remoteIP())) {
-      neu.stop();  // belegt oder nicht erlaubt: ohne Meldung trennen
+    if (!erlaubt(neu.remoteIP())) {
+      neu.stop();  // nicht erlaubt: ohne Meldung trennen
     } else {
+      // Eine neue Verbindung übernimmt: eine hängende alte Sitzung (z. B. App im Hintergrund)
+      // darf den Notzugang nicht blockieren.
+      if (sitzung.connected()) sitzung.stop();
       sitzung = neu;
       sitzung.setNoDelay(true);
       filter.zuruecksetzen();

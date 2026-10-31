@@ -7,7 +7,7 @@ Ersatz für die esp-link-Firmware auf dem **Wemos D1 mini** im Gehäuse des piho
 |---|---|
 | Heim-WLAN | Telnet `192.168.2.16:23`, nur von den Adressen in `ERLAUBT[]` (`src/main.cpp`: Laptop .121, iPhone .100) |
 | Notfall-WLAN | geht an, wenn das Heim-WLAN **3 min** weg ist; WPA2, 1 Gerät, Telnet `192.168.4.1:23`; geht wieder aus, sobald das Heim-WLAN 1 min stabil ist und niemand mehr im Notfall-WLAN ist |
-| Sitzung | eine gleichzeitig, Trennung nach 30 min ohne Eingabe; kein doppeltes Echo (Telnet-Verhandlung: Server übernimmt das Echo) |
+| Sitzung | eine gleichzeitig (eine neue Verbindung übernimmt und trennt die alte), Trennung nach 30 min ohne Eingabe; kein doppeltes Echo (Telnet-Verhandlung: Server übernimmt das Echo) |
 | Update | über das WLAN mit ArduinoOTA (Port 8266), nur mit `OTA_PASSWORT`; erstes Flashen per USB |
 | Weboberfläche | keine |
 | Serielle Leitung | 115200 8N1, UART0; die Firmware schreibt selbst **nichts** auf die Leitung (der Pi würde es als Anmeldeversuch lesen) |
@@ -67,6 +67,17 @@ bzw. es laufen zwei Konsolen auf einer Leitung. ModemManager wird angehalten, we
 **Rückweg:** wie oben, aber `write-flash 0 /root/esp-link-sicherung_JJJJ-MM-TT.bin` (stellt esp-link samt Einstellungen wieder her).
 
 ## Update über das WLAN
+
+Erprobt am 31.10.2026 vom Laptop (ufw nur kurz für den ESP und einen festen Port geöffnet):
+
+```
+sudo ufw allow from 192.168.2.16 to any port 48266 proto tcp
+.venv/bin/python ~/.platformio/packages/framework-arduinoespressif8266/tools/espota.py \
+  -i 192.168.2.16 -p 8266 -P 48266 -a <OTA_PASSWORT> -f .pio/build/d1_mini/firmware.bin
+sudo ufw delete allow from 192.168.2.16 to any port 48266 proto tcp
+```
+
+Alternativ:
 
 ```
 .venv/bin/pio run -t upload --upload-port 192.168.2.16 --upload-protocol espota \
