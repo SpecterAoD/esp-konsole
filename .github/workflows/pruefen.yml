@@ -27,7 +27,7 @@ jobs:
           for f in include/secrets.h .schluessel/privat.pem; do
             if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then echo "$f ist eingecheckt!"; exit 1; fi
           done
-          if git grep -n 'PRIVATE KEY' -- . ; then echo "Privater Schlüssel im Repository!"; exit 1; fi
+          if git grep -nE -- '-----BEGIN ([A-Z]+ )?PRIVATE KEY-----' ; then echo "Privater Schlüssel im Repository!"; exit 1; fi
           if git grep -nE 'WLAN_PASSWORT|NOTFALL_PASSWORT|OTA_PASSWORT' -- ':!include/secrets.h.example' ':!README.md' | grep -E '"[^<"][^"]{7,}"'; then
             echo "Möglicherweise echtes Passwort im Code"; exit 1; fi
 
