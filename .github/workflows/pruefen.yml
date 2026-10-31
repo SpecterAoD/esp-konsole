@@ -1,6 +1,9 @@
-# Prüfungen bei jedem Push und Pull-Request: Test der Telnet-Aufbereitung, Bauen mit Platzhaltern
-# (Warnungen = Fehler), keine Geheimnisse im Repository. Die echte Firmware (mit WLAN-Daten)
-# wird nur lokal gebaut – die hier gebaute Datei ist NICHT zum Flashen gedacht.
+# Prüfungen bei jedem Push und Pull-Request; bei einem Versions-Tag (v*) zusätzlich signiertes Release.
+#   - Tests: Telnet-Aufbereitung, Einstellungen (EEPROM)
+#   - Bauen OHNE secrets.h (Warnungen = Fehler) -> Firmware enthält keine Passwörter
+#   - keine Geheimnisse im Repository
+#   - Tag v*: Firmware mit dem privaten Schlüssel (Secret ESP_SIGNIER_SCHLUESSEL) signieren und als Release
+#     veröffentlichen (firmware.signed.bin + SHA256). Der piholepi holt Releases mit esp-konsole-update.
 name: Prüfen
 
 on:
@@ -16,15 +19,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # für git describe (Version)
 
       - name: Keine Geheimnisse im Repository
         run: |
-          if git ls-files | grep -qx 'include/secrets.h'; then echo "include/secrets.h ist eingecheckt!"; exit 1; fi
+          for f in include/secrets.h .schluessel/privat.pem; do
+            if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then echo "$f ist eingecheckt!"; exit 1; fi
+          done
+          if git grep -n 'PRIVATE KEY' -- . ; then echo "Privater Schlüssel im Repository!"; exit 1; fi
           if git grep -nE 'WLAN_PASSWORT|NOTFALL_PASSWORT|OTA_PASSWORT' -- ':!include/secrets.h.example' ':!README.md' | grep -E '"[^<"][^"]{7,}"'; then
             echo "Möglicherweise echtes Passwort im Code"; exit 1; fi
 
-      - name: Test der Telnet-Aufbereitung
-        run: g++ -std=c++17 -Wall -Werror -Iinclude test/test_filter.cpp -o /tmp/t && /tmp/t
+      - name: Tests
+        run: |
+          g++ -std=c++17 -Wall -Werror -Iinclude test/test_filter.cpp -o /tmp/t && /tmp/t
+          g++ -std=c++17 -Wall -Werror -Iinclude test/test_konfig.cpp -o /tmp/k && /tmp/k
 
       - uses: actions/setup-python@v5
         with:
@@ -35,11 +45,48 @@ jobs:
           path: ~/.platformio
           key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
 
-      - name: Bauen (mit Platzhaltern)
+      - name: Bauen (ohne secrets.h)
         env:
           PLATFORMIO_BUILD_FLAGS: -Werror
         run: |
+          test ! -e include/secrets.h
           pip install -q platformio
-          cp include/secrets.h.example include/secrets.h
           pio run
           ls -l .pio/build/d1_mini/firmware.bin
+
+      - name: Signieren (nur Versions-Tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          SCHLUESSEL: ${{ secrets.ESP_SIGNIER_SCHLUESSEL }}
+        run: |
+          test -n "$SCHLUESSEL" || { echo "Secret ESP_SIGNIER_SCHLUESSEL fehlt"; exit 1; }
+          umask 077; printf '%s\n' "$SCHLUESSEL" > /tmp/privat.pem
+          python3 ~/.platformio/packages/framework-arduinoespressif8266/tools/signing.py \
+            -m sign -b .pio/build/d1_mini/firmware.bin -s /tmp/privat.pem -o firmware.signed.bin
+          rm -f /tmp/privat.pem
+          # Gegenprobe mit dem öffentlichen Schlüssel aus der Firmware
+          python3 werkzeuge/signatur_pruefen.py firmware.signed.bin include/signatur_public.h
+          sha256sum firmware.signed.bin > firmware.signed.bin.sha256
+
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: firmware
+          path: firmware.signed.bin*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: pruefen
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+      - name: Release veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" firmware.signed.bin firmware.signed.bin.sha256 \
+            -R "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes "Signierte Firmware (ohne Zugangsdaten). Einspielen: esp-konsole-update auf dem piholepi."
