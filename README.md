@@ -1,7 +1,8 @@
 # ESP-Konsole – serielle Konsole des piholepi per Telnet
 
 Ersatz für die esp-link-Firmware auf dem **Wemos D1 mini** im Gehäuse des piholepi
-(esp-link v3.2.47 stürzte am 30.10.2026 mehrmals pro Stunde ab, hatte keine Anmeldung und ein schwaches Notfall-WLAN).
+Bis 31.10.2026 lag der Code im Heimnetz-Repository unter `piholepi/esp-konsole` (Historie übernommen).
+(esp-link v3.2.47 – eine Alpha-Version – stürzte am 30.10.2026 mehrmals pro Stunde ab, hatte keine Anmeldung und ein schwaches Notfall-WLAN).
 
 | | |
 |---|---|
@@ -16,7 +17,7 @@ Die Anmeldung am piholepi ist zusätzlich abgesichert: `pam_faillock` (5 Fehlver
 Anmeldung/Fehlversuch, siehe `system/etc/pam.d/login`. Beim Neustart des ESP gibt der ESP8266-Bootloader
 kurz Zeichen mit 74880 Baud aus; der Pi kann das als (ungültigen) Anmeldeversuch zählen – harmlos.
 
-## Pi-Seite (eingespielt mit host-deploy.sh piholepi)
+## Pi-Seite (im Repository SpecterAoD/Heimnetz, eingespielt mit host-deploy.sh piholepi)
 
 - `serial-getty@serial0` fest auf **115200** (`feste-baudrate.conf`, ohne `--keep-baud`): Datenmüll auf der Leitung
   (Flashen, Neustart des ESP) schaltete agetty sonst auf eine andere Baudrate → über Telnet nur Nullbytes.
@@ -24,6 +25,12 @@ kurz Zeichen mit 74880 Baud aus; der Pi kann das als (ungültigen) Anmeldeversuc
 - `kernel.sysrq = 0` (`60-hardening.conf`): ein Break auf der Leitung löste sonst SysRq-Befehle aus
   (am 31.10.2026 u. a. Konsolen-Meldestufe 8; möglich wären Neustart/Ausschalten gewesen).
 - USB-Seriell auf dem Board ist ein **FT232R** (Nachbau): Schreiben geht, **Auslesen nicht** (esptool: Corrupt data).
+
+## Prüfungen (GitHub Actions)
+
+Bei jedem Push: Test der Telnet-Aufbereitung, Bauen mit Platzhaltern (Warnungen = Fehler) und Suche nach
+eingecheckten Passwörtern (`.github/workflows/pruefen.yml`). Die dort gebaute Datei enthält nur Platzhalter
+und ist **nicht** zum Flashen gedacht; die echte Firmware wird lokal mit `include/secrets.h` gebaut.
 
 ## Geheimnisse
 
@@ -37,7 +44,7 @@ tr -dc 'A-HJ-NP-Za-km-z2-9' </dev/urandom | head -c 24; echo
 ## Bauen (Laptop)
 
 ```
-cd piholepi/esp-konsole
+cd esp-konsole                                                 # Laptop: /srv/claude/Projekte/esp-konsole
 python3 -m venv .venv && .venv/bin/pip install platformio     # einmalig
 cp include/secrets.h.example include/secrets.h                 # einmalig, Werte eintragen
 .venv/bin/pio run                                              # -> .pio/build/d1_mini/firmware.bin

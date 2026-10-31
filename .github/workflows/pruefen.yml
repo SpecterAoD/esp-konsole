@@ -1,0 +1,45 @@
+# Prüfungen bei jedem Push und Pull-Request: Test der Telnet-Aufbereitung, Bauen mit Platzhaltern
+# (Warnungen = Fehler), keine Geheimnisse im Repository. Die echte Firmware (mit WLAN-Daten)
+# wird nur lokal gebaut – die hier gebaute Datei ist NICHT zum Flashen gedacht.
+name: Prüfen
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pruefen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Keine Geheimnisse im Repository
+        run: |
+          if git ls-files | grep -qx 'include/secrets.h'; then echo "include/secrets.h ist eingecheckt!"; exit 1; fi
+          if git grep -nE 'WLAN_PASSWORT|NOTFALL_PASSWORT|OTA_PASSWORT' -- ':!include/secrets.h.example' ':!README.md' | grep -E '"[^<"][^"]{7,}"'; then
+            echo "Möglicherweise echtes Passwort im Code"; exit 1; fi
+
+      - name: Test der Telnet-Aufbereitung
+        run: g++ -std=c++17 -Wall -Werror -Iinclude test/test_filter.cpp -o /tmp/t && /tmp/t
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+
+      - name: Bauen (mit Platzhaltern)
+        env:
+          PLATFORMIO_BUILD_FLAGS: -Werror
+        run: |
+          pip install -q platformio
+          cp include/secrets.h.example include/secrets.h
+          pio run
+          ls -l .pio/build/d1_mini/firmware.bin
