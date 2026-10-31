@@ -9,7 +9,9 @@ Bis 31.10.2026 lag der Code im Heimnetz-Repository unter `piholepi/esp-konsole` 
 | Heim-WLAN | Telnet `192.168.2.16:23`, nur von den Adressen in `ERLAUBT[]` (`src/main.cpp`: Laptop .121, iPhone .100) |
 | Notfall-WLAN | geht an, wenn das Heim-WLAN **3 min** weg ist; WPA2, 1 Gerät, Telnet `192.168.4.1:23`; geht wieder aus, sobald das Heim-WLAN 1 min stabil ist und niemand mehr im Notfall-WLAN ist |
 | Sitzung | eine gleichzeitig (eine neue Verbindung übernimmt und trennt die alte), Trennung nach 30 min ohne Eingabe; kein doppeltes Echo (Telnet-Verhandlung: Server übernimmt das Echo) |
-| Update | über das WLAN mit ArduinoOTA (Port 8266), nur mit `OTA_PASSWORT`; erstes Flashen per USB |
+| Update | über das WLAN mit ArduinoOTA (Port 8266), nur mit OTA-Passwort **und gültiger RSA-Signatur** (ab v2); erstes Flashen per USB |
+| Zugangsdaten | ab v2 im EEPROM des ESP; eine lokal mit `include/secrets.h` gebaute Firmware schreibt sie beim ersten Start, Releases enthalten keine |
+| Info-Port | `8023`: eine Zeile JSON (Version, Laufzeit, RSSI, Speicher, Neustartgrund, Notfall, Sitzung, Herkunft der Einstellungen) für Laptop, iPhone und piholepi |
 | Weboberfläche | keine |
 | Serielle Leitung | 115200 8N1, UART0; die Firmware schreibt selbst **nichts** auf die Leitung (der Pi würde es als Anmeldeversuch lesen) |
 
@@ -31,6 +33,27 @@ kurz Zeichen mit 74880 Baud aus; der Pi kann das als (ungültigen) Anmeldeversuc
 Bei jedem Push: Test der Telnet-Aufbereitung, Bauen mit Platzhaltern (Warnungen = Fehler) und Suche nach
 eingecheckten Passwörtern (`.github/workflows/pruefen.yml`). Die dort gebaute Datei enthält nur Platzhalter
 und ist **nicht** zum Flashen gedacht; die echte Firmware wird lokal mit `include/secrets.h` gebaut.
+
+## Versionen und automatische Updates
+
+- Version = `git describe` (z. B. `v2.0.0`). Ein Tag `v*` löst bei GitHub Bau, **Signatur** (Secret `ESP_SIGNIER_SCHLUESSEL`)
+  und Release aus (`firmware.signed.bin` + `.sha256`).
+- Der piholepi prüft täglich um 14:20 (`esp-konsole-update.timer`, Skript im Heimnetz-Repository): Release neuer als die
+  Version am ESP → SHA256 und Signatur prüfen → einspielen → Ergebnis per ntfy. Nicht bei offener Telnet-Sitzung.
+- Neue Version veröffentlichen: `git tag v2.0.1 && git push origin v2.0.1`.
+
+## Signaturschlüssel
+
+- Öffentlich: `include/signatur_public.h` (in der Firmware) und im Heimnetz-Repository für den piholepi.
+- Privat: Laptop `.schluessel/privat.pem` (600, nie im Repository) und GitHub-Secret `ESP_SIGNIER_SCHLUESSEL`.
+  **Sicherungskopie im Passwort-Manager ablegen** – ohne den Schlüssel gehen Updates nur noch per USB.
+- Lokal signieren: `python3 ~/.platformio/packages/framework-arduinoespressif8266/tools/signing.py -m sign -b .pio/build/d1_mini/firmware.bin -s .schluessel/privat.pem -o firmware.signed.bin`
+- Prüfen: `python3 werkzeuge/signatur_pruefen.py firmware.signed.bin include/signatur_public.h`
+
+## Passwörter ändern
+
+Neue Werte in `include/secrets.h`, dann `pio run -e d1_mini_konfig` (überschreibt die Werte im EEPROM), signieren und
+einspielen. Danach das neue OTA-Passwort auch in `/etc/heimnetz/esp-konsole.env` auf dem piholepi eintragen.
 
 ## Geheimnisse
 
@@ -73,25 +96,16 @@ bzw. es laufen zwei Konsolen auf einer Leitung. ModemManager wird angehalten, we
 
 **Rückweg:** wie oben, aber `write-flash 0 /root/esp-link-sicherung_JJJJ-MM-TT.bin` (stellt esp-link samt Einstellungen wieder her).
 
-## Update über das WLAN
+## Update über das WLAN (von Hand)
 
-Erprobt am 31.10.2026 vom Laptop (ufw nur kurz für den ESP und einen festen Port geöffnet):
+Mit dem Skript aus dem Heimnetz-Repository (Passwort aus einer Datei, nicht auf der Kommandozeile; Zeitgrenzen):
 
 ```
 sudo ufw allow from 192.168.2.16 to any port 48266 proto tcp
-.venv/bin/python ~/.platformio/packages/framework-arduinoespressif8266/tools/espota.py \
-  -i 192.168.2.16 -p 8266 -P 48266 -a <OTA_PASSWORT> -f .pio/build/d1_mini/firmware.bin
+python3 ../heimnetz/piholepi/system/usr/local/sbin/esp-konsole-update.py --datei firmware.signed.bin \
+  --env .schluessel/ota.env --schluessel include/signatur_public.h      # erst mit --pruefen
 sudo ufw delete allow from 192.168.2.16 to any port 48266 proto tcp
 ```
 
-Alternativ:
-
-```
-.venv/bin/pio run -t upload --upload-port 192.168.2.16 --upload-protocol espota \
-  --upload-flags="--auth=<OTA_PASSWORT>"
-```
-
-oder mit `espota.py -i 192.168.2.16 -p 8266 -a <OTA_PASSWORT> -f firmware.bin`.
-Beim Update baut der **ESP die Verbindung zum hochladenden Rechner auf** (zufälliger Port): auf dem Laptop bzw.
-piholepi muss ufw das für die Dauer des Updates von 192.168.2.16 zulassen, sonst bricht es ab.
-Die laufende Telnet-Sitzung wird dabei getrennt. Schlägt das Update fehl, läuft die alte Firmware weiter.
+`.schluessel/ota.env` enthält `ESP_OTA_PASSWORT=…` (600). Nicht `espota.py -a …` verwenden: das Passwort steht dann in der
+Prozessliste, und bei abgelehnter Signatur wartet espota endlos.
