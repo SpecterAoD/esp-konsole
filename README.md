@@ -42,9 +42,11 @@ und ist **nicht** zum Flashen gedacht; die echte Firmware wird lokal mit `includ
 - Der piholepi prüft täglich um 14:20 (`esp-konsole-update.timer`, Skript im Heimnetz-Repository): Release neuer als die
   Version am ESP → SHA256 und Signatur prüfen → einspielen → Ergebnis per ntfy. Nicht bei offener Telnet-Sitzung.
 - Neue Version veröffentlichen: `git tag v3.0.1 && git push origin v3.0.1`.
-- **v2 → v3:** v3 übernimmt die Zugangsdaten aus dem EEPROM (Format 1 → 2) beim ersten Start, die neuen Einstellungen
-  bekommen die bisherigen festen Werte. **Zurück auf v2** nur mit einer lokal mit `include/secrets.h` gebauten
-  v2-Firmware: ein v2-Release ohne Zugangsdaten erkennt Format 2 nicht und bliebe ohne WLAN (dann nur noch USB).
+- **v2 ↔ v3:** v3 legt die Einstellungen neben dem alten Block ab (Format 2 ab Adresse 512) und hält den alten Block
+  (Format 1, Adresse 0) mit den Zugangsdaten immer aktuell. Beim ersten Start übernimmt v3 die Zugangsdaten von v2
+  (Info-Port meldet dann einmal `"konfig":"eeprom-v1"`), die neuen Einstellungen bekommen die bisherigen festen Werte.
+  **Zurück auf v2 geht jederzeit**, auch per Release: v2 findet seine Zugangsdaten (mit per `~config` geänderten Passwörtern).
+  Schreibt v2 dabei ins EEPROM, gehen die v3-Einstellungen verloren (Ports usw. wieder Standard), die Zugangsdaten nicht.
 
 ## Signaturschlüssel
 

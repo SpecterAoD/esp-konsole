@@ -62,32 +62,76 @@ int main() {
   uint8_t loch[4] = {255, 255, 0, 255}, ip4[4] = {10, 0, 0, 1};
   pruefe("Maske mit Lücke ungültig", !notfall_netz_ok(ip4, loch));
 
-  // ---- Übernahme Format 1 ----
-  DatenV1 v1;
-  memset(&v1, 0, sizeof v1);
-  v1.magie = MAGIE;
-  v1.format = 1;
-  strcpy(v1.wlan_name, w);
-  strcpy(v1.wlan_passwort, wp);
-  strcpy(v1.notfall_name, n);
-  strcpy(v1.notfall_passwort, np);
-  strcpy(v1.ota_passwort, o);
-  v1.crc = crc32(reinterpret_cast<const uint8_t*>(&v1), offsetof(DatenV1, crc));
-  uint8_t roh[sizeof(Daten) + 1];
-  memset(roh, 0xFF, sizeof roh);  // Rest des EEPROM-Bereichs wie gelöschtes Flash
-  memcpy(roh + 1, &v1, sizeof v1);  // absichtlich ungerade Adresse (Ausrichtung)
+  // ---- Ablage: Format 1 (v2) und Format 2 nebeneinander ----
+  // So schreibt eine v2-Firmware: nur Format 1 an Adresse 0, Sektor sonst gelöscht (0xFF)
+  auto v2_firmware_schreibt = [&](uint8_t* roh, const char* wlan_pw) {
+    DatenV1 v1;
+    memset(&v1, 0, sizeof v1);
+    v1.magie = MAGIE;
+    v1.format = 1;
+    strcpy(v1.wlan_name, w);
+    strcpy(v1.wlan_passwort, wlan_pw);
+    strcpy(v1.notfall_name, n);
+    strcpy(v1.notfall_passwort, np);
+    strcpy(v1.ota_passwort, o);
+    v1.crc = crc32(reinterpret_cast<const uint8_t*>(&v1), offsetof(DatenV1, crc));
+    memset(roh, 0xFF, EEPROM_GROESSE);
+    memcpy(roh + ADR_V1, &v1, sizeof v1);
+  };
+  // So liest eine v2-Firmware: Format 1 an Adresse 0
+  auto v2_firmware_liest = [&](const uint8_t* roh, DatenV1& a) {
+    memcpy(&a, roh + ADR_V1, sizeof a);
+    return v1_gueltig(a);
+  };
+
+  static uint8_t roh[EEPROM_GROESSE + 1];
+  uint8_t* r = roh + 1;  // absichtlich ungerade Adresse (Ausrichtung)
   Daten m;
-  pruefe("v1 übernommen", migrieren_v1_zu_v2(roh + 1, sizeof(Daten), m) && gueltig(m));
-  pruefe("v1: Zugangsdaten gleich, Standard-Einstellungen",
+  v2_firmware_schreibt(r, wp);
+  pruefe("nur Format 1: übernommen", laden(r, EEPROM_GROESSE, m) == Quelle::FORMAT1 && gueltig(m));
+  pruefe("nur Format 1: Zugangsdaten gleich, Standard-Einstellungen",
          strcmp(m.wlan_passwort, wp) == 0 && strcmp(m.ota_passwort, o) == 0 && m.telnet_port == 23 &&
              m.format == FORMAT);
-  roh[1 + offsetof(DatenV1, wlan_passwort)] ^= 1;
-  pruefe("v1 mit falscher Prüfsumme abgelehnt", !migrieren_v1_zu_v2(roh + 1, sizeof(Daten), m));
-  roh[1 + offsetof(DatenV1, wlan_passwort)] ^= 1;
-  pruefe("zu kurzer Puffer abgelehnt", !migrieren_v1_zu_v2(roh + 1, sizeof(DatenV1) - 1, m));
-  Daten v2 = d;
-  pruefe("v2-Block wird nicht als v1 übernommen",
-         !migrieren_v1_zu_v2(reinterpret_cast<const uint8_t*>(&v2), sizeof v2, m));
+
+  m.telnet_port = 2323;
+  m.crc = pruefsumme(m);
+  schreiben(m, r);
+  Daten m2;
+  pruefe("nach schreiben: Format 2", laden(r, EEPROM_GROESSE, m2) == Quelle::FORMAT2 && m2.telnet_port == 2323);
+  DatenV1 alt;
+  pruefe("nach schreiben: v2-Firmware findet gültige Zugangsdaten",
+         v2_firmware_liest(r, alt) && strcmp(alt.wlan_passwort, wp) == 0);
+
+  Daten neu_pw = m2;
+  zugangsdaten_setzen(neu_pw, w, "neues-wlan-pw-1", n, np, o);
+  schreiben(neu_pw, r);
+  pruefe("Passwort per v3 geändert: v2-Firmware sieht das neue",
+         v2_firmware_liest(r, alt) && strcmp(alt.wlan_passwort, "neues-wlan-pw-1") == 0);
+
+  // v2-Firmware ändert Format 1 nur im Puffer (ohne Sektor zu löschen, theoretischer Fall)
+  {
+    static uint8_t kopie[EEPROM_GROESSE];
+    memcpy(kopie, r, sizeof kopie);
+    v2_firmware_schreibt(kopie, "von-v2-geaendert");
+    memcpy(kopie + ADR_V2, r + ADR_V2, sizeof(Daten));  // Format 2 noch da
+    pruefe("Format 1 neuer: Zugangsdaten daraus, Einstellungen aus Format 2",
+           laden(kopie, sizeof kopie, m2) == Quelle::FORMAT2_ZUGANG_V1 &&
+               strcmp(m2.wlan_passwort, "von-v2-geaendert") == 0 && m2.telnet_port == 2323 && gueltig(m2));
+  }
+  v2_firmware_schreibt(r, "von-v2-geaendert");  // echte v2-Firmware: Sektor gelöscht
+  pruefe("v2 hat Sektor neu geschrieben: Übernahme aus Format 1",
+         laden(r, EEPROM_GROESSE, m2) == Quelle::FORMAT1 && strcmp(m2.wlan_passwort, "von-v2-geaendert") == 0);
+
+  r[ADR_V1 + offsetof(DatenV1, wlan_passwort)] ^= 1;
+  pruefe("Format 1 mit falscher Prüfsumme abgelehnt", laden(r, EEPROM_GROESSE, m2) == Quelle::KEINE);
+  pruefe("zu kurzer Puffer abgelehnt", laden(r, EEPROM_GROESSE - 1, m2) == Quelle::KEINE);
+  memset(r, 0xFF, EEPROM_GROESSE);
+  pruefe("gelöschter Sektor: nichts", laden(r, EEPROM_GROESSE, m2) == Quelle::KEINE);
+
+  // Format 2 kaputt, Format 1 gültig -> Übernahme aus Format 1
+  schreiben(d, r);
+  r[ADR_V2 + offsetof(Daten, telnet_port)] ^= 1;
+  pruefe("Format 2 kaputt: Format 1 greift", laden(r, EEPROM_GROESSE, m2) == Quelle::FORMAT1 && gueltig(m2));
 
   // ---- Neustart nötig? ----
   Daten b = d;

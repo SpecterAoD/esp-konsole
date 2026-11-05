@@ -5,7 +5,16 @@
 //     (oder immer, wenn mit KONFIG_ERZWINGEN gebaut).
 //   - Firmware von GitHub (ohne secrets.h) liest sie nur. Deshalb enthalten Releases keine Passwörter.
 // Ab Version 3 (Format 2) kommen Ports, Hostname, Notfall-WLAN und Zeiten dazu; änderbar per Telnet
-// (include/config_cmd.h). Ein Format-1-Block wird beim Start übernommen (migrieren_v1_zu_v2).
+// (include/config_cmd.h).
+//
+// Ablage im EEPROM (abwärtskompatibel, eine v2-Firmware läuft jederzeit weiter):
+//   ADR_V1 (0):   Format 1 wie bei v2 – nur Zugangsdaten. v3 hält ihn immer auf demselben Stand.
+//   ADR_V2 (512): Format 2 – alles.
+// Laden (laden): Format 2 gültig -> verwenden; hat eine v2-Firmware inzwischen den Format-1-Block mit anderen
+// Zugangsdaten geschrieben, gelten diese. Nur Format 1 gültig -> übernehmen, Einstellungen = Standard.
+// Schreiben (schreiben): immer beide Blöcke. Achtung: EEPROM.commit() löscht den ganzen Sektor und schreibt
+// nur die bei EEPROM.begin() angegebene Größe; eine v2-Firmware (276 Bytes) löscht beim Schreiben also den
+// Format-2-Block – dann greift die Übernahme aus Format 1.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -15,6 +24,7 @@ namespace konfig {
 
 const uint32_t MAGIE = 0x4E4F4B45;  // "EKON"
 const uint16_t FORMAT = 2;
+const size_t ADR_V1 = 0, ADR_V2 = 512, EEPROM_GROESSE = 1024;
 
 // Format 1 (Firmware v2.x), nur noch zum Übernehmen
 struct DatenV1 {
@@ -58,6 +68,7 @@ struct Daten {
 static_assert(offsetof(Daten, hostname) == 269 && offsetof(Daten, telnet_port) == 312 &&
                   offsetof(Daten, crc) == 348 && sizeof(Daten) == 352,
               "Layout Format 2");
+static_assert(ADR_V1 + sizeof(DatenV1) <= ADR_V2 && ADR_V2 + sizeof(Daten) <= EEPROM_GROESSE, "Ablage");
 
 // Wertebereiche (auch für die Telnet-Kommandos)
 const uint32_t NOTFALL_NACH_MIN_S = 60, NOTFALL_NACH_MAX_S = 3600;
@@ -205,26 +216,75 @@ inline bool fuellen(Daten& d, const char* wlan, const char* wlan_pw, const char*
   return zugangsdaten_setzen(d, wlan, wlan_pw, nf, nf_pw, ota);
 }
 
-// Übernimmt einen gültigen Format-1-Block (rohe EEPROM-Bytes, mindestens sizeof(DatenV1)).
-// Nur wenn Kopf, Prüfsumme und Werte stimmen; die neuen Einstellungen bekommen die bisherigen festen Werte.
-inline bool migrieren_v1_zu_v2(const uint8_t* roh, size_t n, Daten& neu) {
-  if (n < sizeof(DatenV1)) return false;
-  DatenV1 alt;
-  memcpy(&alt, roh, sizeof alt);  // kein Zeiger-Cast: Ausrichtung egal
-  if (alt.magie != MAGIE || alt.format != 1) return false;
-  if (alt.crc != crc32(roh, offsetof(DatenV1, crc))) return false;
-  if (!memchr(alt.wlan_name, 0, sizeof alt.wlan_name) || !memchr(alt.wlan_passwort, 0, sizeof alt.wlan_passwort) ||
-      !memchr(alt.notfall_name, 0, sizeof alt.notfall_name) ||
-      !memchr(alt.notfall_passwort, 0, sizeof alt.notfall_passwort) ||
-      !memchr(alt.ota_passwort, 0, sizeof alt.ota_passwort))
+// Format-1-Block prüfen (Kopf, Prüfsumme inkl. Füllbytes, abgeschlossene und plausible Werte)
+inline bool v1_gueltig(const DatenV1& a) {
+  if (a.magie != MAGIE || a.format != 1) return false;
+  if (a.crc != crc32(reinterpret_cast<const uint8_t*>(&a), offsetof(DatenV1, crc))) return false;
+  if (!memchr(a.wlan_name, 0, sizeof a.wlan_name) || !memchr(a.wlan_passwort, 0, sizeof a.wlan_passwort) ||
+      !memchr(a.notfall_name, 0, sizeof a.notfall_name) || !memchr(a.notfall_passwort, 0, sizeof a.notfall_passwort) ||
+      !memchr(a.ota_passwort, 0, sizeof a.ota_passwort))
     return false;
-  Daten d;
-  grundlage(d);
-  if (!zugangsdaten_setzen(d, alt.wlan_name, alt.wlan_passwort, alt.notfall_name, alt.notfall_passwort,
-                           alt.ota_passwort))
-    return false;
-  neu = d;
-  return true;
+  return werte_ok(a.wlan_name, a.wlan_passwort, a.notfall_name, a.notfall_passwort, a.ota_passwort);
+}
+
+// Format-1-Block mit den Zugangsdaten aus d (so, wie ihn eine v2-Firmware selbst schreiben würde)
+inline void v1_aus(const Daten& d, DatenV1& a) {
+  memset(&a, 0, sizeof a);
+  a.magie = MAGIE;
+  a.format = 1;
+  memcpy(a.wlan_name, d.wlan_name, sizeof a.wlan_name);
+  memcpy(a.wlan_passwort, d.wlan_passwort, sizeof a.wlan_passwort);
+  memcpy(a.notfall_name, d.notfall_name, sizeof a.notfall_name);
+  memcpy(a.notfall_passwort, d.notfall_passwort, sizeof a.notfall_passwort);
+  memcpy(a.ota_passwort, d.ota_passwort, sizeof a.ota_passwort);
+  a.crc = crc32(reinterpret_cast<const uint8_t*>(&a), offsetof(DatenV1, crc));
+}
+
+inline bool gleiche_zugangsdaten(const Daten& d, const DatenV1& a) {
+  return strcmp(d.wlan_name, a.wlan_name) == 0 && strcmp(d.wlan_passwort, a.wlan_passwort) == 0 &&
+         strcmp(d.notfall_name, a.notfall_name) == 0 && strcmp(d.notfall_passwort, a.notfall_passwort) == 0 &&
+         strcmp(d.ota_passwort, a.ota_passwort) == 0;
+}
+
+enum class Quelle {
+  KEINE,             // nichts Gültiges
+  FORMAT2,           // Format-2-Block
+  FORMAT2_ZUGANG_V1, // Format 2, Zugangsdaten aber aus dem neueren Format-1-Block (von einer v2-Firmware)
+  FORMAT1,           // nur Format 1: übernommen, Einstellungen = Standard
+};
+
+// Liest die rohen EEPROM-Bytes (mindestens EEPROM_GROESSE). d ist nur bei Quelle != KEINE gültig.
+// Danach sollte der Aufrufer schreiben(d, …) ausführen und bei Unterschied ins EEPROM zurückschreiben.
+inline Quelle laden(const uint8_t* roh, size_t n, Daten& d) {
+  if (n < EEPROM_GROESSE) return Quelle::KEINE;
+  DatenV1 a;
+  memcpy(&a, roh + ADR_V1, sizeof a);  // memcpy statt Zeiger-Cast: Ausrichtung egal
+  bool v1 = v1_gueltig(a);
+  Daten b;
+  memcpy(&b, roh + ADR_V2, sizeof b);
+  if (gueltig(b)) {
+    d = b;
+    if (v1 && !gleiche_zugangsdaten(b, a)) {
+      zugangsdaten_setzen(d, a.wlan_name, a.wlan_passwort, a.notfall_name, a.notfall_passwort, a.ota_passwort);
+      return Quelle::FORMAT2_ZUGANG_V1;
+    }
+    return Quelle::FORMAT2;
+  }
+  if (v1) {
+    grundlage(d);
+    zugangsdaten_setzen(d, a.wlan_name, a.wlan_passwort, a.notfall_name, a.notfall_passwort, a.ota_passwort);
+    return Quelle::FORMAT1;
+  }
+  return Quelle::KEINE;
+}
+
+// Schreibt d (gültig, mit Prüfsumme) als Format 2 und die Zugangsdaten als Format 1 in die rohen EEPROM-Bytes
+// (mindestens EEPROM_GROESSE). Bytes zwischen den Blöcken bleiben unverändert.
+inline void schreiben(const Daten& d, uint8_t* roh) {
+  DatenV1 a;
+  v1_aus(d, a);
+  memcpy(roh + ADR_V1, &a, sizeof a);
+  memcpy(roh + ADR_V2, &d, sizeof d);
 }
 
 // Braucht der Wechsel von alt nach neu einen Neustart? Nur die Zeiten und reboot_tage wirken sofort.

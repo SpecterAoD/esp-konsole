@@ -116,32 +116,32 @@ static bool notfallnetz_ueberschneidet(const konfig::Daten& d) {
   return false;
 }
 
-// Schreibt d ins EEPROM und liest zur Kontrolle zurück
+// Schreibt d ins EEPROM (Format 2 + Format-1-Kopie der Zugangsdaten für v2) und liest zur Kontrolle zurück.
+// Immer den ganzen Bereich: EEPROM.commit() löscht den Sektor und schreibt nur die angegebene Größe.
 static bool konfig_schreiben(const konfig::Daten& d) {
-  EEPROM.begin(sizeof(konfig::Daten));
-  EEPROM.put(0, d);
+  static uint8_t roh[konfig::EEPROM_GROESSE];
+  EEPROM.begin(sizeof roh);
+  for (size_t i = 0; i < sizeof roh; i++) roh[i] = EEPROM.read(i);
+  konfig::schreiben(d, roh);
+  for (size_t i = 0; i < sizeof roh; i++) EEPROM.write(i, roh[i]);
   bool ok = EEPROM.commit();
-  konfig::Daten zurueck;
-  EEPROM.get(0, zurueck);
+  for (size_t i = 0; ok && i < sizeof roh; i++) ok = EEPROM.read(i) == roh[i];
   EEPROM.end();
-  return ok && memcmp(&zurueck, &d, sizeof d) == 0;
+  konfig::Daten zurueck;
+  return ok && konfig::laden(roh, sizeof roh, zurueck) == konfig::Quelle::FORMAT2 &&
+         memcmp(&zurueck, &d, sizeof d) == 0;
 }
 
-// Einstellungen laden: EEPROM gültig -> verwenden (Format 1 wird übernommen); sonst (oder mit
+// Einstellungen laden: EEPROM gültig -> verwenden (Format 1 von v2 wird übernommen); sonst (oder mit
 // KONFIG_ERZWINGEN) Zugangsdaten aus secrets.h schreiben, falls plausibel – vorhandene Einstellungen bleiben.
 // Ohne beides bleibt das WLAN aus (Notzugang dann nur per USB).
 static void konfig_laden() {
-  static uint8_t roh[sizeof(konfig::Daten)];
+  static uint8_t roh[konfig::EEPROM_GROESSE];
   EEPROM.begin(sizeof roh);
   for (size_t i = 0; i < sizeof roh; i++) roh[i] = EEPROM.read(i);
   EEPROM.end();
-  memcpy(&kfg, roh, sizeof kfg);
-
-  bool im_eeprom = konfig::gueltig(kfg);
-  if (!im_eeprom && konfig::migrieren_v1_zu_v2(roh, sizeof roh, kfg)) {
-    konfig_schreiben(kfg);  // auch bei Schreibfehler gilt der übernommene Stand für diesen Lauf
-    im_eeprom = true;
-  }
+  konfig::Quelle quelle = konfig::laden(roh, sizeof roh, kfg);
+  bool im_eeprom = quelle != konfig::Quelle::KEINE;
 #ifdef KONFIG_ERZWINGEN
   bool schreiben = true;
 #else
@@ -155,16 +155,21 @@ static void konfig_laden() {
   }
   if (schreiben && konfig::zugangsdaten_setzen(neu, WLAN_NAME, WLAN_PASSWORT, NOTFALL_NAME, NOTFALL_PASSWORT,
                                                OTA_PASSWORT)) {
-    if (!im_eeprom || memcmp(&neu, &kfg, sizeof neu) != 0) konfig_schreiben(neu);
     kfg = neu;
     kfg_ok = true;
     kfg_quelle = "secrets.h";
   } else if (im_eeprom) {
     kfg_ok = true;
-    kfg_quelle = "eeprom";
+    kfg_quelle = quelle == konfig::Quelle::FORMAT2 ? "eeprom" : "eeprom-v1";
   } else {
     konfig::grundlage(kfg);  // keine Zugangsdaten: wenigstens Hostname/Ports definiert
+    return;
   }
+  // Beide Blöcke auf den Stand von kfg bringen (Übernahme aus Format 1, secrets.h, fehlende Format-1-Kopie)
+  static uint8_t soll[konfig::EEPROM_GROESSE];
+  memcpy(soll, roh, sizeof soll);
+  konfig::schreiben(kfg, soll);
+  if (memcmp(soll, roh, sizeof soll) != 0) konfig_schreiben(kfg);  // bei Schreibfehler gilt kfg trotzdem
 }
 
 static void info_beantworten() {
