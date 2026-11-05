@@ -10,6 +10,7 @@ Bis 31.10.2026 lag der Code im Heimnetz-Repository unter `piholepi/esp-konsole` 
 | Notfall-WLAN | geht an, wenn das Heim-WLAN **3 min** weg ist; WPA2, 1 Gerät, Telnet `192.168.4.1:23`; geht wieder aus, sobald das Heim-WLAN 1 min stabil ist und niemand mehr im Notfall-WLAN ist |
 | Sitzung | eine gleichzeitig (eine neue Verbindung übernimmt und trennt die alte), Trennung nach 30 min ohne Eingabe; kein doppeltes Echo (Telnet-Verhandlung: Server übernimmt das Echo) |
 | Update | über das WLAN mit ArduinoOTA (Port 8266), nur mit OTA-Passwort **und gültiger RSA-Signatur** (ab v2); erstes Flashen per USB |
+| Konfiguration | **ab v3 ohne Neuflashen**: Alle Einstellungen (WLAN, Ports, DNS, NTP, etc.) über Telnet-Kommandos änderbar; siehe `KONFIGURATION.md` |
 | Zugangsdaten | ab v2 im EEPROM des ESP; eine lokal mit `include/secrets.h` gebaute Firmware schreibt sie beim ersten Start, Releases enthalten keine |
 | Info-Port | `8023`: eine Zeile JSON (Version, Laufzeit, RSSI, Speicher, Neustartgrund, Notfall, Sitzung, Herkunft der Einstellungen) für Laptop, iPhone und piholepi |
 | Weboberfläche | keine |
@@ -36,11 +37,16 @@ und ist **nicht** zum Flashen gedacht; die echte Firmware wird lokal mit `includ
 
 ## Versionen und automatische Updates
 
-- Version = `git describe` (z. B. `v2.0.0`). Ein Tag `v*` löst bei GitHub Bau, **Signatur** (Secret `ESP_SIGNIER_SCHLUESSEL`)
+- Version = `git describe` (z. B. `v3.0.0`). Ein Tag `v*` löst bei GitHub Bau, **Signatur** (Secret `ESP_SIGNIER_SCHLUESSEL`)
   und Release aus (`firmware.signed.bin` + `.sha256`).
 - Der piholepi prüft täglich um 14:20 (`esp-konsole-update.timer`, Skript im Heimnetz-Repository): Release neuer als die
   Version am ESP → SHA256 und Signatur prüfen → einspielen → Ergebnis per ntfy. Nicht bei offener Telnet-Sitzung.
-- Neue Version veröffentlichen: `git tag v2.0.1 && git push origin v2.0.1`.
+- Neue Version veröffentlichen: `git tag v3.0.0 && git push origin v3.0.0`.
+
+**Versionsverlauf:**
+- **v1**: Basis-Version (nur Pi-Konsole über Telnet)
+- **v2**: EEPROM-basierte Konfiguration, Updates mit Signatur, Info-Port
+- **v3**: Konfigurierbarkeit ohne Neuflashen (Telnet-Kommandos), alle Parameter im EEPROM
 
 ## Signaturschlüssel
 
