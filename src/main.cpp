@@ -1,7 +1,7 @@
 // ESP-Konsole: serielle Konsole des piholepi (ttyAMA0, 115200 8N1) per Telnet, Ersatz für esp-link.
 // Hardware: Wemos D1 mini im Gehäuse des piholepi, UART0 (TX/RX) an GPIO14/15 des Pi.
 //
-// Verhalten (Zahlen = Standardwerte, ab v3 per "~config" änderbar, siehe README):
+// Verhalten (Zahlen = Standardwerte, ab v3 per "~esp-config" änderbar, siehe README):
 //   - Heim-WLAN: Telnet auf Port 23 nur von ERLAUBT[] (siehe unten, nicht per Telnet änderbar).
 //   - Heim-WLAN länger als 3 min weg: Notfall-WLAN (WPA2, 1 Gerät), Telnet unter 192.168.4.1:23.
 //     Ist das Heim-WLAN wieder da und kein Gerät im Notfall-WLAN, geht das Notfall-WLAN wieder aus.
@@ -11,8 +11,8 @@
 //     gültiger Signatur (RSA, öffentlicher Schlüssel in include/signatur_public.h). Erstes Flashen per USB.
 //   - Zugangsdaten und Einstellungen im EEPROM (include/konfig.h); eine lokal mit include/secrets.h gebaute
 //     Firmware schreibt die Zugangsdaten beim ersten Start dorthin. Firmware von GitHub enthält keine Passwörter.
-//   - Zeilen, die mit "~config" beginnen, gehen nicht an den Pi, sondern ändern die Einstellungen
-//     (include/config_cmd.h); gespeichert wird erst mit "~config commit".
+//   - Zeilen, die mit "~esp-config" beginnen, gehen nicht an den Pi, sondern ändern die Einstellungen
+//     (include/config_cmd.h); gespeichert wird erst mit "~esp-config commit".
 //   - Info-Port 8023: eine Zeile JSON (Version, Laufzeit, WLAN, Speicher) für ERLAUBT[] und INFO_ERLAUBT[].
 //   - Auf die serielle Leitung wird NUR weitergeleitet, nie selbst etwas ausgegeben (der Pi würde es
 //     als Anmeldeversuch lesen).
@@ -58,7 +58,7 @@ static const uint32_t NEUSTART_NACH_COMMIT_MS = 2000;  // Zeit, damit die Antwor
 static WiFiServer server(23);       // Port wird in setup() aus den Einstellungen gesetzt
 static WiFiServer info_server(8023);
 static konfig::Daten kfg;      // laufende Einstellungen
-static konfig::Daten entwurf;  // Arbeitskopie für "~config set" (je Sitzung)
+static konfig::Daten entwurf;  // Arbeitskopie für "~esp-config set" (je Sitzung)
 static bool kfg_ok = false;
 static const char* kfg_quelle = "keine";
 static BearSSL::PublicKey signatur_schluessel(SIGNATUR_PUBLIC);
@@ -255,7 +255,7 @@ static void sitzung_pflegen() {
   if (sitzung.connected() && millis() - letzte_eingabe > kfg.sitzung_leerlauf_ms) sitzung.stop();
 }
 
-// Antwort auf ein "~config"-Kommando: zeilenweise direkt an den Client (nie an den Pi)
+// Antwort auf ein "~esp-config"-Kommando: zeilenweise direkt an den Client (nie an den Pi)
 static void an_client(void*, const char* p, size_t n) { sitzung.write(p, n); }
 
 static void kommando_ausfuehren(const char* zeile) {
@@ -301,7 +301,7 @@ static void weiterleiten() {
   static const size_t HAPPEN = 64;
   static uint8_t ein[256], aus[512];
   static uint8_t an_pi[HAPPEN + config_cmd::PRAEFIX_LAENGE], echo[3 * HAPPEN + 32];
-  // Telnet -> Pi (Zeilen mit "~config" gehen an den ESP)
+  // Telnet -> Pi (Zeilen mit "~esp-config" gehen an den ESP)
   if (sitzung.connected()) {
     size_t n = sitzung.available();
     if (n) {
@@ -338,7 +338,7 @@ static void neustart_pflegen() {
   laufzeit_ms += uint32_t(jetzt - zuletzt);
   zuletzt = jetzt;
 
-  // nach "~config commit" mit Änderungen, die einen Neustart brauchen (schon gespeichert)
+  // nach "~esp-config commit" mit Änderungen, die einen Neustart brauchen (schon gespeichert)
   if (neustart_geplant && int32_t(jetzt - neustart_ab) >= 0) {
     sitzung.stop();
     delay(100);

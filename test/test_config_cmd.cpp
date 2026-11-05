@@ -48,56 +48,56 @@ int main() {
   }
   {
     Lauf l;
-    l.zeichenweise("~config set wlan_pass geheimgeheim\r");
+    l.zeichenweise("~esp-config set wlan_pass geheimgeheim\r");
     pruefe("zeichenweise: Kommando erkannt", l.kommandos.size() == 1 && l.kommandos[0] == "set wlan_pass geheimgeheim");
     pruefe("zeichenweise: nichts davon an den Pi", l.pi.empty());
-    pruefe("zeichenweise: ESP macht das Echo", l.echo == "~config set wlan_pass geheimgeheim");
+    pruefe("zeichenweise: ESP macht das Echo", l.echo == "~esp-config set wlan_pass geheimgeheim");
   }
   {
     Lauf l;
-    l.senden("ls\r~config show\rwho\r");
+    l.senden("ls\r~esp-config show\rwho\r");
     pruefe("gemischtes Paket: Pi bekommt beide normalen Zeilen", l.pi == "ls\rwho\r");
     pruefe("gemischtes Paket: Kommando erkannt", l.kommandos.size() == 1 && l.kommandos[0] == "show");
   }
   {
     Lauf l;
-    l.zeichenweise("~con");
+    l.zeichenweise("~esp-con");
     pruefe("Präfix wird zurückgehalten", l.pi.empty());
     l.senden("x\r");
-    pruefe("kein Kommando: Zurückgehaltenes geht an den Pi", l.pi == "~conx\r" && l.kommandos.empty());
+    pruefe("kein Kommando: Zurückgehaltenes geht an den Pi", l.pi == "~esp-conx\r" && l.kommandos.empty());
   }
   {
     Lauf l;
-    l.senden("echo ~config show\r");
-    pruefe("~config mitten in der Zeile geht an den Pi", l.pi == "echo ~config show\r" && l.kommandos.empty());
+    l.senden("echo ~esp-config show\r");
+    pruefe("~esp-config mitten in der Zeile geht an den Pi", l.pi == "echo ~esp-config show\r" && l.kommandos.empty());
   }
   {
     Lauf l;
-    l.senden("~configx\r");
-    pruefe("~configx ist kein Kommando", l.pi == "~configx\r" && l.kommandos.empty());
+    l.senden("~esp-configx\r");
+    pruefe("~esp-configx ist kein Kommando", l.pi == "~esp-configx\r" && l.kommandos.empty());
   }
   {
     Lauf l;
-    l.senden("~config\r");
-    pruefe("~config allein = Hilfe", l.kommandos.size() == 1 && l.kommandos[0].empty());
+    l.senden("~esp-config\r");
+    pruefe("~esp-config allein = Hilfe", l.kommandos.size() == 1 && l.kommandos[0].empty());
   }
   {
     Lauf l;
-    l.senden("~config set hostnamX\x7f" "e x\r");
+    l.senden("~esp-config set hostnamX\x7f" "e x\r");
     pruefe("Rücktaste im Kommando", l.kommandos.size() == 1 && l.kommandos[0] == "set hostname x");
   }
   {
     Lauf l;
-    l.senden("~config set wlan_pass abc\x03");
+    l.senden("~esp-config set wlan_pass abc\x03");
     l.senden("ls\r");
     pruefe("Strg-C bricht ab, danach normal", l.kommandos.empty() && l.pi == "ls\r");
   }
   {
     Lauf l;
-    l.senden("~config set ota_pass " + std::string(300, 'a') + "\r");
+    l.senden("~esp-config set ota_pass " + std::string(300, 'a') + "\r");
     pruefe("zu lange Zeile verworfen", l.kommandos.empty() && l.pi.empty() &&
                                            l.echo.find("zu lang") != std::string::npos);
-    l.senden("~config show\r");
+    l.senden("~esp-config show\r");
     pruefe("danach wieder bereit", l.kommandos.size() == 1);
   }
 
@@ -180,7 +180,7 @@ int main() {
   t.clear();
   ausfuehren("help", e, aktiv, aus);
   pruefe("Hilfe vollständig (zeilenweise)", t.find("reboot_tage") != std::string::npos &&
-                                                t.find("~config discard") != std::string::npos);
+                                                t.find("~esp-config discard") != std::string::npos);
 
   // Telnet-Filter an Ort und Stelle (main.cpp filtert im Eingangspuffer)
   telnet::Filter f;

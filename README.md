@@ -10,7 +10,7 @@ Bis 31.10.2026 lag der Code im Heimnetz-Repository unter `piholepi/esp-konsole` 
 | Notfall-WLAN | geht an, wenn das Heim-WLAN **3 min** weg ist; WPA2, 1 Gerät, Telnet `192.168.4.1:23`; geht wieder aus, sobald das Heim-WLAN 1 min stabil ist und niemand mehr im Notfall-WLAN ist |
 | Sitzung | eine gleichzeitig (eine neue Verbindung übernimmt und trennt die alte), Trennung nach 30 min ohne Eingabe; kein doppeltes Echo (Telnet-Verhandlung: Server übernimmt das Echo) |
 | Update | über das WLAN mit ArduinoOTA (Port 8266), nur mit OTA-Passwort **und gültiger RSA-Signatur** (ab v2); erstes Flashen per USB |
-| Einstellungen | ab v3 per Telnet änderbar (`~config`, siehe unten): Zugangsdaten, Hostname, Ports, Notfall-WLAN, Zeiten; die Zahlen in dieser Tabelle sind die Standardwerte. `ERLAUBT[]` bleibt fest in der Firmware |
+| Einstellungen | ab v3 per Telnet änderbar (`~esp-config`, siehe unten): Zugangsdaten, Hostname, Ports, Notfall-WLAN, Zeiten; die Zahlen in dieser Tabelle sind die Standardwerte. `ERLAUBT[]` bleibt fest in der Firmware |
 | Zugangsdaten | ab v2 im EEPROM des ESP; eine lokal mit `include/secrets.h` gebaute Firmware schreibt sie beim ersten Start, Releases enthalten keine |
 | Info-Port | `8023`: eine Zeile JSON (Version, Laufzeit, RSSI, Speicher, Neustartgrund, Notfall, Sitzung, Herkunft der Einstellungen) für Laptop, iPhone und piholepi |
 | Weboberfläche | keine |
@@ -31,7 +31,7 @@ kurz Zeichen mit 74880 Baud aus; der Pi kann das als (ungültigen) Anmeldeversuc
 
 ## Prüfungen (GitHub Actions)
 
-Bei jedem Push: Tests (Telnet-Aufbereitung, Einstellungen im EEPROM, `~config`-Kommandos), Bauen mit Platzhaltern (Warnungen = Fehler) und Suche nach
+Bei jedem Push: Tests (Telnet-Aufbereitung, Einstellungen im EEPROM, `~esp-config`-Kommandos), Bauen mit Platzhaltern (Warnungen = Fehler) und Suche nach
 eingecheckten Passwörtern (`.github/workflows/pruefen.yml`). Die dort gebaute Datei enthält nur Platzhalter
 und ist **nicht** zum Flashen gedacht; die echte Firmware wird lokal mit `include/secrets.h` gebaut.
 
@@ -45,7 +45,7 @@ und ist **nicht** zum Flashen gedacht; die echte Firmware wird lokal mit `includ
 - **v2 ↔ v3:** v3 legt die Einstellungen neben dem alten Block ab (Format 2 ab Adresse 512) und hält den alten Block
   (Format 1, Adresse 0) mit den Zugangsdaten immer aktuell. Beim ersten Start übernimmt v3 die Zugangsdaten von v2
   (Info-Port meldet dann einmal `"konfig":"eeprom-v1"`), die neuen Einstellungen bekommen die bisherigen festen Werte.
-  **Zurück auf v2 geht jederzeit**, auch per Release: v2 findet seine Zugangsdaten (mit per `~config` geänderten Passwörtern).
+  **Zurück auf v2 geht jederzeit**, auch per Release: v2 findet seine Zugangsdaten (mit per `~esp-config` geänderten Passwörtern).
   Schreibt v2 dabei ins EEPROM, gehen die v3-Einstellungen verloren (Ports usw. wieder Standard), die Zugangsdaten nicht.
 
 ## Signaturschlüssel
@@ -58,16 +58,16 @@ und ist **nicht** zum Flashen gedacht; die echte Firmware wird lokal mit `includ
 
 ## Einstellungen per Telnet (ab v3)
 
-In der Telnet-Sitzung eine Zeile mit `~config` beginnen (wie die `~.`-Befehle von ssh). Solche Zeilen gehen **nicht**
-an den Pi; das Echo macht dann der ESP. `~config` gilt nur am Zeilenanfang, sonst geht alles unverändert an den Pi.
+In der Telnet-Sitzung eine Zeile mit `~esp-config` beginnen (wie die `~.`-Befehle von ssh). Solche Zeilen gehen **nicht**
+an den Pi; das Echo macht dann der ESP. `~esp-config` gilt nur am Zeilenanfang, sonst geht alles unverändert an den Pi.
 
 | Kommando | Wirkung |
 |---|---|
-| `~config show` | Entwurf anzeigen; `*` = geändert, noch nicht gespeichert; Passwörter nur als Länge |
-| `~config set <name> <wert>` | nur im Entwurf ändern; Werte mit Leerzeichen in `"…"` oder `'…'` |
-| `~config commit` | Entwurf prüfen, mit Prüfsumme ins EEPROM schreiben, zurücklesen; bei Bedarf Neustart nach 2 s |
-| `~config discard` | Entwurf verwerfen (auch beim Trennen der Sitzung) |
-| `~config help` | Kurzhilfe |
+| `~esp-config show` | Entwurf anzeigen; `*` = geändert, noch nicht gespeichert; Passwörter nur als Länge |
+| `~esp-config set <name> <wert>` | nur im Entwurf ändern; Werte mit Leerzeichen in `"…"` oder `'…'` |
+| `~esp-config commit` | Entwurf prüfen, mit Prüfsumme ins EEPROM schreiben, zurücklesen; bei Bedarf Neustart nach 2 s |
+| `~esp-config discard` | Entwurf verwerfen (auch beim Trennen der Sitzung) |
+| `~esp-config help` | Kurzhilfe |
 
 Ohne `commit` ändert sich nichts. Rücktaste geht, Strg-C bricht die Zeile ab, Zeilen über 160 Zeichen werden verworfen.
 
@@ -95,7 +95,7 @@ Ohne `commit` ändert sich nichts. Rücktaste geht, Strg-C bricht die Zeile ab, 
 
 ## Passwörter ändern
 
-Am einfachsten per Telnet (siehe oben), z. B. `~config set ota_pass "…"` und `~config commit`.
+Am einfachsten per Telnet (siehe oben), z. B. `~esp-config set ota_pass "…"` und `~esp-config commit`.
 Oder: neue Werte in `include/secrets.h`, dann `pio run -e d1_mini_konfig` (überschreibt die Werte im EEPROM), signieren und
 einspielen. Danach das neue OTA-Passwort auch in `/etc/heimnetz/esp-konsole.env` auf dem piholepi eintragen.
 

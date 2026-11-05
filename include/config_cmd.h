@@ -1,12 +1,12 @@
 // Einstellungen per Telnet ändern (ab v3), ohne Arduino-Abhängigkeiten, auf dem Laptop testbar.
 //
-// Weiche: Eine Zeile, die mit "~config" beginnt, geht NICHT an den Pi, sondern an den ESP (wie die
+// Weiche: Eine Zeile, die mit "~esp-config" beginnt, geht NICHT an den Pi, sondern an den ESP (wie die
 // "~."-Befehle von ssh). Am Zeilenanfang hält die Weiche passende Zeichen zurück, bis klar ist, ob es ein
 // Kommando wird; sonst gehen sie unverändert an den Pi. Das funktioniert unabhängig davon, wie die Zeichen
 // auf TCP-Pakete verteilt sind (zeichenweise oder ganze Zeilen). Zeilenanfang = Sitzungsbeginn oder nach
 // CR, LF, Strg-C, Strg-D, Strg-U.
 //
-// Kommandos (siehe README):  ~config show | set <name> <wert> | commit | discard | help
+// Kommandos (siehe README):  ~esp-config show | set <name> <wert> | commit | discard | help
 //   set ändert nur einen Entwurf. commit prüft ihn, schreibt ihn mit neuer Prüfsumme ins EEPROM und
 //   startet neu, wenn eine geänderte Einstellung das braucht. Ohne commit ändert sich nichts.
 #pragma once
@@ -31,7 +31,7 @@
 
 namespace config_cmd {
 
-const char PRAEFIX[] = "~config";
+const char PRAEFIX[] = "~esp-config";
 const size_t PRAEFIX_LAENGE = sizeof(PRAEFIX) - 1;
 const size_t MAX_ZEILE = 160;  // längere Kommandozeilen werden verworfen
 
@@ -49,7 +49,7 @@ class Weiche {
 
   // Verarbeitet bis zu n Bytes (schon durch telnet::Filter). Bytes für den Pi -> pi/n_pi, Antwort an den
   // Client (Echo im Kommandomodus) -> echo/n_echo. Bei einer fertigen Kommandozeile hört es dort auf
-  // (Ereignis KOMMANDO, zeile() liefert den Text nach "~config"); Rückgabe = Anzahl verbrauchter Bytes.
+  // (Ereignis KOMMANDO, zeile() liefert den Text nach "~esp-config"); Rückgabe = Anzahl verbrauchter Bytes.
   size_t verarbeiten(const uint8_t* ein, size_t n, uint8_t* pi, size_t& n_pi, uint8_t* echo, size_t& n_echo,
                      Ereignis& ereignis) {
     n_pi = n_echo = 0;
@@ -68,7 +68,7 @@ class Weiche {
             zeile_[n_++] = char(c);  // zurückhalten
             zustand_ = Zustand::PRAEFIX;
           } else if (n_ == PRAEFIX_LAENGE && (c == ' ' || c == '\r' || c == '\n')) {
-            // "~config" erkannt: ab jetzt Kommandomodus, Echo macht der ESP
+            // "~esp-config" erkannt: ab jetzt Kommandomodus, Echo macht der ESP
             for (size_t k = 0; k < n_; k++) echo[n_echo++] = uint8_t(zeile_[k]);
             if (c == ' ') echo[n_echo++] = c;
             n_ = 0;
@@ -224,10 +224,10 @@ inline bool text_setzen(char* ziel, size_t groesse, const char* wert) {
 }
 
 inline void hilfe(Ausgabe& aus) {
-  aus(T("~config show                  Entwurf anzeigen (* = noch nicht gespeichert)\r\n"));
-  aus(T("~config set <name> <wert>     im Entwurf ändern; Werte mit Leerzeichen in \"...\"\r\n"));
-  aus(T("~config commit                prüfen, speichern, bei Bedarf neu starten\r\n"));
-  aus(T("~config discard               Entwurf verwerfen\r\n"));
+  aus(T("~esp-config show                  Entwurf anzeigen (* = noch nicht gespeichert)\r\n"));
+  aus(T("~esp-config set <name> <wert>     im Entwurf ändern; Werte mit Leerzeichen in \"...\"\r\n"));
+  aus(T("~esp-config commit                prüfen, speichern, bei Bedarf neu starten\r\n"));
+  aus(T("~esp-config discard               Entwurf verwerfen\r\n"));
   aus(T("Namen: wlan_name wlan_pass notfall_name notfall_pass ota_pass hostname\r\n"));
   aus(T("       telnet_port info_port ota_port notfall_kanal notfall_ip notfall_maske\r\n"));
   aus(T("       notfall_nach_s heim_stabil_s leerlauf_min reboot_tage"));
@@ -358,11 +358,11 @@ inline bool setzen(konfig::Daten& e, const char* name, const char* wert, Ausgabe
     e.reboot_tage = uint16_t(z);
     return true;
   }
-  aus(T("Fehler: unbekannter Name '%s' (~config help)"), name);
+  aus(T("Fehler: unbekannter Name '%s' (~esp-config help)"), name);
   return false;
 }
 
-// Führt die Zeile nach "~config" aus. entwurf = Arbeitskopie der Sitzung, aktiv = laufende Einstellungen.
+// Führt die Zeile nach "~esp-config" aus. entwurf = Arbeitskopie der Sitzung, aktiv = laufende Einstellungen.
 inline Ergebnis ausfuehren(const char* zeile, konfig::Daten& entwurf, const konfig::Daten& aktiv, Ausgabe& aus) {
   char kopie[MAX_ZEILE + 1];
   wert_bereinigen(zeile, kopie, sizeof kopie);
@@ -386,14 +386,14 @@ inline Ergebnis ausfuehren(const char* zeile, konfig::Daten& entwurf, const konf
   if (strcmp(cmd, "set") == 0) {
     char* wert = strchr(rest, ' ');
     if (*rest == 0 || !wert) {
-      aus(T("Syntax: ~config set <name> <wert>"));
+      aus(T("Syntax: ~esp-config set <name> <wert>"));
       return Ergebnis::FEHLER;
     }
     *wert++ = 0;
     char bereinigt[MAX_ZEILE + 1];
     wert_bereinigen(wert, bereinigt, sizeof bereinigt);
     if (!setzen(entwurf, rest, bereinigt, aus)) return Ergebnis::FEHLER;
-    aus(T("%s geändert (noch nicht gespeichert: ~config commit)"), rest);
+    aus(T("%s geändert (noch nicht gespeichert: ~esp-config commit)"), rest);
     return Ergebnis::GEAENDERT;
   }
   if (strcmp(cmd, "commit") == 0) return Ergebnis::COMMIT;
@@ -401,7 +401,7 @@ inline Ergebnis ausfuehren(const char* zeile, konfig::Daten& entwurf, const konf
     aus(T("Entwurf verworfen"));
     return Ergebnis::VERWORFEN;
   }
-  aus(T("Fehler: unbekanntes Kommando '%s' (~config help)"), cmd);
+  aus(T("Fehler: unbekanntes Kommando '%s' (~esp-config help)"), cmd);
   return Ergebnis::FEHLER;
 }
 
