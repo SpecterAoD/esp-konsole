@@ -10,7 +10,7 @@ Bis 31.10.2026 lag der Code im Heimnetz-Repository unter `piholepi/esp-konsole` 
 | Notfall-WLAN | geht an, wenn das Heim-WLAN **3 min** weg ist; WPA2, 1 Gerät, Telnet `192.168.4.1:23`; geht wieder aus, sobald das Heim-WLAN 1 min stabil ist und niemand mehr im Notfall-WLAN ist |
 | Sitzung | eine gleichzeitig (eine neue Verbindung übernimmt und trennt die alte), Trennung nach 30 min ohne Eingabe; kein doppeltes Echo (Telnet-Verhandlung: Server übernimmt das Echo) |
 | Update | über das WLAN mit ArduinoOTA (Port 8266), nur mit OTA-Passwort **und gültiger RSA-Signatur** (ab v2); erstes Flashen per USB |
-| Konfiguration | **ab v3 ohne Neuflashen**: Alle Einstellungen (WLAN, Ports, DNS, NTP, etc.) über Telnet-Kommandos änderbar; siehe `KONFIGURATION.md` |
+| Einstellungen | ab v3 per Telnet änderbar (`~config`, siehe unten): Zugangsdaten, Hostname, Ports, Notfall-WLAN, Zeiten; die Zahlen in dieser Tabelle sind die Standardwerte. `ERLAUBT[]` bleibt fest in der Firmware |
 | Zugangsdaten | ab v2 im EEPROM des ESP; eine lokal mit `include/secrets.h` gebaute Firmware schreibt sie beim ersten Start, Releases enthalten keine |
 | Info-Port | `8023`: eine Zeile JSON (Version, Laufzeit, RSSI, Speicher, Neustartgrund, Notfall, Sitzung, Herkunft der Einstellungen) für Laptop, iPhone und piholepi |
 | Weboberfläche | keine |
@@ -31,7 +31,7 @@ kurz Zeichen mit 74880 Baud aus; der Pi kann das als (ungültigen) Anmeldeversuc
 
 ## Prüfungen (GitHub Actions)
 
-Bei jedem Push: Test der Telnet-Aufbereitung, Bauen mit Platzhaltern (Warnungen = Fehler) und Suche nach
+Bei jedem Push: Tests (Telnet-Aufbereitung, Einstellungen im EEPROM, `~config`-Kommandos), Bauen mit Platzhaltern (Warnungen = Fehler) und Suche nach
 eingecheckten Passwörtern (`.github/workflows/pruefen.yml`). Die dort gebaute Datei enthält nur Platzhalter
 und ist **nicht** zum Flashen gedacht; die echte Firmware wird lokal mit `include/secrets.h` gebaut.
 
@@ -41,12 +41,10 @@ und ist **nicht** zum Flashen gedacht; die echte Firmware wird lokal mit `includ
   und Release aus (`firmware.signed.bin` + `.sha256`).
 - Der piholepi prüft täglich um 14:20 (`esp-konsole-update.timer`, Skript im Heimnetz-Repository): Release neuer als die
   Version am ESP → SHA256 und Signatur prüfen → einspielen → Ergebnis per ntfy. Nicht bei offener Telnet-Sitzung.
-- Neue Version veröffentlichen: `git tag v3.0.0 && git push origin v3.0.0`.
-
-**Versionsverlauf:**
-- **v1**: Basis-Version (nur Pi-Konsole über Telnet)
-- **v2**: EEPROM-basierte Konfiguration, Updates mit Signatur, Info-Port
-- **v3**: Konfigurierbarkeit ohne Neuflashen (Telnet-Kommandos), alle Parameter im EEPROM
+- Neue Version veröffentlichen: `git tag v3.0.1 && git push origin v3.0.1`.
+- **v2 → v3:** v3 übernimmt die Zugangsdaten aus dem EEPROM (Format 1 → 2) beim ersten Start, die neuen Einstellungen
+  bekommen die bisherigen festen Werte. **Zurück auf v2** nur mit einer lokal mit `include/secrets.h` gebauten
+  v2-Firmware: ein v2-Release ohne Zugangsdaten erkennt Format 2 nicht und bliebe ohne WLAN (dann nur noch USB).
 
 ## Signaturschlüssel
 
@@ -56,9 +54,47 @@ und ist **nicht** zum Flashen gedacht; die echte Firmware wird lokal mit `includ
 - Lokal signieren: `python3 ~/.platformio/packages/framework-arduinoespressif8266/tools/signing.py -m sign -b .pio/build/d1_mini/firmware.bin -s .schluessel/privat.pem -o firmware.signed.bin`
 - Prüfen: `python3 werkzeuge/signatur_pruefen.py firmware.signed.bin include/signatur_public.h`
 
+## Einstellungen per Telnet (ab v3)
+
+In der Telnet-Sitzung eine Zeile mit `~config` beginnen (wie die `~.`-Befehle von ssh). Solche Zeilen gehen **nicht**
+an den Pi; das Echo macht dann der ESP. `~config` gilt nur am Zeilenanfang, sonst geht alles unverändert an den Pi.
+
+| Kommando | Wirkung |
+|---|---|
+| `~config show` | Entwurf anzeigen; `*` = geändert, noch nicht gespeichert; Passwörter nur als Länge |
+| `~config set <name> <wert>` | nur im Entwurf ändern; Werte mit Leerzeichen in `"…"` oder `'…'` |
+| `~config commit` | Entwurf prüfen, mit Prüfsumme ins EEPROM schreiben, zurücklesen; bei Bedarf Neustart nach 2 s |
+| `~config discard` | Entwurf verwerfen (auch beim Trennen der Sitzung) |
+| `~config help` | Kurzhilfe |
+
+Ohne `commit` ändert sich nichts. Rücktaste geht, Strg-C bricht die Zeile ab, Zeilen über 160 Zeichen werden verworfen.
+
+| Name | Standard | Bereich | Wirkt |
+|---|---|---|---|
+| `wlan_name`, `notfall_name` | – | 1–32 Zeichen | Neustart |
+| `wlan_pass`, `notfall_pass` | – | 8–63 Zeichen | Neustart |
+| `ota_pass` | – | 8–64 Zeichen | Neustart (ArduinoOTA übernimmt es nur beim Start) |
+| `hostname` | `esp-konsole` | 1–32, `a-z A-Z 0-9 -` | Neustart |
+| `telnet_port` / `info_port` / `ota_port` | 23 / 8023 / 8266 | 1–65535, verschieden | Neustart |
+| `notfall_kanal` | 6 | 1–13 | Neustart |
+| `notfall_ip` / `notfall_maske` | 192.168.4.1 / 255.255.255.0 | Maske /24–/30, darf das Heimnetz nicht überdecken | Neustart |
+| `notfall_nach_s` | 180 | 60–3600 | sofort |
+| `heim_stabil_s` | 60 | 10–600 | sofort |
+| `leerlauf_min` | 30 | 1–120 | sofort |
+| `reboot_tage` | 0 (nie) | 0–365; Neustart nur ohne offene Sitzung | sofort |
+
+**Vorsicht:**
+- Falsches Heim-WLAN → nach `notfall_nach_s` kommt das Notfall-WLAN. Heim- **und** Notfall-WLAN falsch → nur noch USB.
+  Deshalb immer nur eins davon auf einmal ändern und testen.
+- Der piholepi (`esp-konsole-update`, Überwachung) erwartet Info-Port 8023 und OTA-Port 8266; wer sie ändert,
+  muss das Heimnetz-Repository anpassen. Neues OTA-Passwort ebenso in `/etc/heimnetz/esp-konsole.env` eintragen.
+- Eine Firmware mit `KONFIG_ERZWINGEN` (`pio run -e d1_mini_konfig`) überschreibt nur die Zugangsdaten, die übrigen
+  Einstellungen bleiben.
+
 ## Passwörter ändern
 
-Neue Werte in `include/secrets.h`, dann `pio run -e d1_mini_konfig` (überschreibt die Werte im EEPROM), signieren und
+Am einfachsten per Telnet (siehe oben), z. B. `~config set ota_pass "…"` und `~config commit`.
+Oder: neue Werte in `include/secrets.h`, dann `pio run -e d1_mini_konfig` (überschreibt die Werte im EEPROM), signieren und
 einspielen. Danach das neue OTA-Passwort auch in `/etc/heimnetz/esp-konsole.env` auf dem piholepi eintragen.
 
 ## Geheimnisse
@@ -77,7 +113,7 @@ cd esp-konsole                                                 # Laptop: /srv/cl
 python3 -m venv .venv && .venv/bin/pip install platformio     # einmalig
 cp include/secrets.h.example include/secrets.h                 # einmalig, Werte eintragen
 .venv/bin/pio run                                              # -> .pio/build/d1_mini/firmware.bin
-g++ -std=c++17 -Iinclude test/test_filter.cpp -o /tmp/t && /tmp/t   # Test der Telnet-Aufbereitung
+for t in filter konfig config_cmd; do g++ -std=c++17 -Wall -Werror -Iinclude test/test_$t.cpp -o /tmp/$t && /tmp/$t; done   # Tests
 ```
 
 ## Erstes Flashen per USB am piholepi (als piroot)
