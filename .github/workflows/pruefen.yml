@@ -1,5 +1,5 @@
 # Prüfungen bei jedem Push und Pull-Request; bei einem Versions-Tag (v*) zusätzlich signiertes Release.
-#   - Tests: Telnet-Aufbereitung, Einstellungen (EEPROM)
+#   - Tests: Telnet-Aufbereitung, Einstellungen (EEPROM), Telnet-Kommandos (~esp-config)
 #   - Bauen OHNE secrets.h (Warnungen = Fehler) -> Firmware enthält keine Passwörter
 #   - keine Geheimnisse im Repository
 #   - Tag v*: Firmware mit dem privaten Schlüssel (Secret ESP_SIGNIER_SCHLUESSEL) signieren und als Release
@@ -35,6 +35,7 @@ jobs:
         run: |
           g++ -std=c++17 -Wall -Werror -Iinclude test/test_filter.cpp -o /tmp/t && /tmp/t
           g++ -std=c++17 -Wall -Werror -Iinclude test/test_konfig.cpp -o /tmp/k && /tmp/k
+          g++ -std=c++17 -Wall -Werror -Iinclude test/test_config_cmd.cpp -o /tmp/c && /tmp/c
 
       - uses: actions/setup-python@v5
         with:
