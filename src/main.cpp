@@ -19,7 +19,6 @@
 #include <ESP8266WiFi.h>
 #include <Updater.h>
 
-#include "config_cmd.h"
 #include "konfig.h"
 #include "signatur_public.h"
 #include "telnet_filter.h"
@@ -39,7 +38,7 @@
 #define FW_VERSION "dev"
 #endif
 
-// ---- Einstellungen (Defaults, überschrieben durch EEPROM) ----
+// ---- Einstellungen ----
 static const IPAddress ERLAUBT[] = {
     IPAddress(192, 168, 2, 121),  // Laptop (linuxmint)
     IPAddress(192, 168, 2, 100),  // iPhone
@@ -47,8 +46,16 @@ static const IPAddress ERLAUBT[] = {
 static const IPAddress INFO_ERLAUBT[] = {
     IPAddress(192, 168, 2, 6),  // piholepi (Update-Prüfung, Überwachung)
 };
+static const char* HOSTNAME = "esp-konsole";
+static const uint16_t TELNET_PORT = 23;
+static const uint16_t INFO_PORT = 8023;
 static const uint32_t BAUD = 115200;
-static const uint32_t HEIM_VERSUCH_MS = 30UL * 1000;  // Neuversuch Heim-WLAN im Notfallbetrieb
+static const uint32_t NOTFALL_NACH_MS = 3UL * 60 * 1000;       // Heim-WLAN so lange weg -> Notfall-WLAN
+static const uint32_t HEIM_STABIL_MS = 60UL * 1000;            // so lange wieder da -> Notfall-WLAN aus
+static const uint32_t HEIM_VERSUCH_MS = 30UL * 1000;           // Neuversuch Heim-WLAN im Notfallbetrieb
+static const uint32_t SITZUNG_LEERLAUF_MS = 30UL * 60 * 1000;  // Telnet-Sitzung ohne Eingabe trennen
+static const uint8_t NOTFALL_KANAL = 6;
+static const IPAddress NOTFALL_IP(192, 168, 4, 1), NOTFALL_MASKE(255, 255, 255, 0);
 // -----------------------
 
 static WiFiServer server(TELNET_PORT);
@@ -63,14 +70,9 @@ static WiFiClient sitzung;
 static telnet::Filter filter;
 static bool notfall_an = false;
 static uint32_t heim_zuletzt_ok = 0, heim_seit = 0, letzter_versuch = 0, letzte_eingabe = 0;
-static bool neustart_noetig = false;
-static uint32_t reboot_timer = 0;
 
 static bool im_notfallnetz(const IPAddress& ip) {
-  if (!notfall_an) return false;
-  IPAddress nf_ip(kfg.notfall_ip[0], kfg.notfall_ip[1], kfg.notfall_ip[2], kfg.notfall_ip[3]);
-  IPAddress nf_maske(kfg.notfall_maske[0], kfg.notfall_maske[1], kfg.notfall_maske[2], kfg.notfall_maske[3]);
-  return (uint32_t(ip) & uint32_t(nf_maske)) == (uint32_t(nf_ip) & uint32_t(nf_maske));
+  return notfall_an && (uint32_t(ip) & uint32_t(NOTFALL_MASKE)) == (uint32_t(NOTFALL_IP) & uint32_t(NOTFALL_MASKE));
 }
 
 static bool erlaubt(const IPAddress& ip) {
@@ -87,21 +89,11 @@ static bool info_erlaubt(const IPAddress& ip) {
   return false;
 }
 
+// Einstellungen laden: EEPROM gültig -> verwenden; sonst (oder mit KONFIG_ERZWINGEN) Werte aus secrets.h
+// schreiben, falls plausibel. Ohne beides bleibt das WLAN aus (Notzugang dann nur per USB).
 static void konfig_laden() {
   EEPROM.begin(sizeof(konfig::Daten));
   EEPROM.get(0, kfg);
-  
-  // Versuchen v1-Format zu migrieren
-  uint16_t fmt = *(const uint16_t*)((uint8_t*)&kfg + 4);
-  if (fmt == 1 && !konfig::gueltig(kfg)) {
-    uint8_t alt_buf[273];
-    EEPROM.get(0, alt_buf);
-    if (konfig::migrieren_v1_zu_v2(alt_buf, kfg)) {
-      EEPROM.put(0, kfg);
-      EEPROM.commit();
-    }
-  }
-  
   bool im_eeprom = konfig::gueltig(kfg);
 #ifdef KONFIG_ERZWINGEN
   bool schreiben = true;
@@ -110,7 +102,7 @@ static void konfig_laden() {
 #endif
   konfig::Daten neu;
   if (schreiben && konfig::fuellen(neu, WLAN_NAME, WLAN_PASSWORT, NOTFALL_NAME, NOTFALL_PASSWORT, OTA_PASSWORT)) {
-    if (!im_eeprom || memcmp(&neu, &kfg, offsetof(konfig::Daten, dns_server)) != 0) {
+    if (!im_eeprom || memcmp(&neu, &kfg, sizeof neu) != 0) {
       EEPROM.put(0, neu);
       EEPROM.commit();
     }
@@ -135,7 +127,7 @@ static void info_beantworten() {
   snprintf(zeile, sizeof zeile,
            "{\"name\":\"%s\",\"version\":\"%s\",\"laufzeit_s\":%lu,\"rssi\":%d,\"heap\":%u,"
            "\"neustart\":\"%s\",\"notfall\":%s,\"sitzung\":%s,\"konfig\":\"%s\",\"signatur\":true}\n",
-           kfg.hostname, FW_VERSION, (unsigned long)(millis() / 1000), WiFi.RSSI(), ESP.getFreeHeap(),
+           HOSTNAME, FW_VERSION, (unsigned long)(millis() / 1000), WiFi.RSSI(), ESP.getFreeHeap(),
            ESP.getResetReason().c_str(), notfall_an ? "true" : "false", sitzung.connected() ? "true" : "false",
            kfg_quelle);
   c.write(zeile, strlen(zeile));
@@ -150,12 +142,12 @@ static void heim_verbinden() {
 }
 
 static void notfall_ein() {
+  // Automatisches Wiederverbinden aus: sonst springt der ESP beim Suchen über alle Kanäle und
+  // das Notfall-WLAN bricht ständig ab. Neuversuche steuert wlan_pflegen().
   WiFi.setAutoReconnect(false);
   WiFi.mode(WIFI_AP_STA);
-  IPAddress nf_ip(kfg.notfall_ip[0], kfg.notfall_ip[1], kfg.notfall_ip[2], kfg.notfall_ip[3]);
-  IPAddress nf_maske(kfg.notfall_maske[0], kfg.notfall_maske[1], kfg.notfall_maske[2], kfg.notfall_maske[3]);
-  WiFi.softAPConfig(nf_ip, nf_ip, nf_maske);
-  WiFi.softAP(kfg.notfall_name, kfg.notfall_passwort, kfg.notfall_kanal, false, 1);
+  WiFi.softAPConfig(NOTFALL_IP, NOTFALL_IP, NOTFALL_MASKE);
+  WiFi.softAP(kfg.notfall_name, kfg.notfall_passwort, NOTFALL_KANAL, false, 1);
   notfall_an = true;
 }
 
@@ -178,14 +170,15 @@ static void wlan_pflegen() {
 
   if (!kfg_ok) return;
   if (!notfall_an) {
-    if (!heim && jetzt - heim_zuletzt_ok > kfg.notfall_nach_ms) notfall_ein();
+    if (!heim && jetzt - heim_zuletzt_ok > NOTFALL_NACH_MS) notfall_ein();
     return;
   }
   uint8_t geraete = WiFi.softAPgetStationNum();
-  if (heim && jetzt - heim_seit > kfg.heim_stabil_ms && geraete == 0 && !sitzung.connected()) {
+  if (heim && jetzt - heim_seit > HEIM_STABIL_MS && geraete == 0 && !sitzung.connected()) {
     notfall_aus();
     return;
   }
+  // Heim-WLAN nur suchen, solange niemand im Notfall-WLAN ist (Suche stört das Notfall-WLAN)
   if (!heim && geraete == 0 && jetzt - letzter_versuch > HEIM_VERSUCH_MS) heim_verbinden();
 }
 
@@ -193,8 +186,10 @@ static void sitzung_pflegen() {
   if (server.hasClient()) {
     WiFiClient neu = server.accept();
     if (!erlaubt(neu.remoteIP())) {
-      neu.stop();
+      neu.stop();  // nicht erlaubt: ohne Meldung trennen
     } else {
+      // Eine neue Verbindung übernimmt: eine hängende alte Sitzung (z. B. App im Hintergrund)
+      // darf den Notzugang nicht blockieren.
       if (sitzung.connected()) sitzung.stop();
       sitzung = neu;
       sitzung.setNoDelay(true);
@@ -204,58 +199,22 @@ static void sitzung_pflegen() {
     }
   }
   if (sitzung && !sitzung.connected()) sitzung.stop();
-  if (sitzung.connected() && millis() - letzte_eingabe > kfg.sitzung_leerlauf_ms) sitzung.stop();
+  if (sitzung.connected() && millis() - letzte_eingabe > SITZUNG_LEERLAUF_MS) sitzung.stop();
 }
 
 static void weiterleiten() {
   static uint8_t ein[256], aus[512];
-  static String cmd_buffer;
-  
-  // Telnet -> Pi (mit Config-Command-Check)
+  // Telnet -> Pi
   if (sitzung.connected()) {
     size_t n = sitzung.available();
     if (n) {
       if (n > sizeof(ein)) n = sizeof(ein);
       n = sitzung.read(ein, n);
-      
-      // Auf Konfigurationskommandos prüfen (aber nur für erlaubte IPs)
-      bool ist_konfigcommand = false;
-      for (size_t i = 0; i < n; i++) {
-        if (ein[i] == '\r' || ein[i] == '\n') {
-          if (cmd_buffer.startsWith("config ")) {
-            String ausgabe;
-            bool nrestart = false;
-            config_cmd::parse_und_execute(cmd_buffer, kfg, ausgabe, nrestart);
-            if (!ausgabe.isEmpty()) {
-              sitzung.write((const uint8_t*)"\r\n", 2);
-              sitzung.write((const uint8_t*)ausgabe.c_str(), ausgabe.length());
-              sitzung.write((const uint8_t*)"\r\n", 2);
-            }
-            if (nrestart) {
-              neustart_noetig = true;
-              reboot_timer = millis() + 2000;  // 2 Sekunden Verzögerung
-            }
-            cmd_buffer = "";
-            ist_konfigcommand = true;
-          } else {
-            cmd_buffer = "";
-          }
-        } else if (ein[i] >= 32 && ein[i] < 127) {
-          cmd_buffer += (char)ein[i];
-        } else {
-          cmd_buffer = "";
-        }
-      }
-      
-      // Wenn nicht nur Config-Kommando: an Pi weitergeben
-      if (!ist_konfigcommand) {
-        size_t k = filter.eingang(ein, n, aus);
-        if (k) Serial.write(aus, k);
-      }
+      size_t k = filter.eingang(ein, n, aus);
+      if (k) Serial.write(aus, k);
       letzte_eingabe = millis();
     }
   }
-  
   // Pi -> Telnet (ohne Sitzung werden die Zeichen verworfen)
   size_t n = Serial.available();
   if (n) {
@@ -273,42 +232,25 @@ void setup() {
   Serial.begin(BAUD);
   Serial.setDebugOutput(false);
   konfig_laden();
-  WiFi.persistent(false);
+  WiFi.persistent(false);  // WLAN-Daten nicht vom SDK speichern lassen, sie stehen in unserem EEPROM-Bereich
   WiFi.mode(WIFI_STA);
-  WiFi.hostname(kfg.hostname);
+  WiFi.hostname(HOSTNAME);
   WiFi.setAutoReconnect(true);
   heim_verbinden();
-  heim_zuletzt_ok = millis();
-  
-  // Server mit konfigurierten Ports starten
-  if (server) server.stop();
-  if (info_server) info_server.stop();
-  server = WiFiServer(kfg.telnet_port);
-  info_server = WiFiServer(kfg.info_port);
+  heim_zuletzt_ok = millis();  // Frist für das Notfall-WLAN läuft ab dem Start
   server.begin();
   server.setNoDelay(true);
   info_server.begin();
 
+  // Nur signierte Firmware annehmen (gilt für jedes Update über das Netz)
   Update.installSignature(&signatur_hash, &signatur_pruefer);
-  ArduinoOTA.setHostname(kfg.hostname);
-  ArduinoOTA.setPort(kfg.ota_port);
+  ArduinoOTA.setHostname(HOSTNAME);
   if (kfg_ok) ArduinoOTA.setPassword(kfg.ota_passwort);
-  ArduinoOTA.onStart([]() { sitzung.stop(); });
-  if (kfg_ok) ArduinoOTA.begin(false);
+  ArduinoOTA.onStart([]() { sitzung.stop(); });  // Konsole während des Updates trennen
+  if (kfg_ok) ArduinoOTA.begin(false);            // ohne mDNS-Werbung; ohne Passwort kein OTA
 }
 
 void loop() {
-  // Neustart, wenn Konfiguration das erfordert
-  if (neustart_noetig && millis() > reboot_timer) {
-    EEPROM.begin(sizeof(konfig::Daten));
-    EEPROM.put(0, kfg);
-    EEPROM.commit();
-    EEPROM.end();
-    sitzung.stop();
-    delay(500);
-    ESP.restart();
-  }
-  
   ArduinoOTA.handle();
   wlan_pflegen();
   sitzung_pflegen();
