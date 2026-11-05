@@ -117,30 +117,25 @@ static bool notfallnetz_ueberschneidet(const konfig::Daten& d) {
 }
 
 // Schreibt d ins EEPROM (Format 2 + Format-1-Kopie der Zugangsdaten für v2) und liest zur Kontrolle zurück.
-// Immer den ganzen Bereich: EEPROM.commit() löscht den Sektor und schreibt nur die angegebene Größe.
+// Gearbeitet wird direkt im Puffer der EEPROM-Bibliothek (nur zwischen begin() und end() belegt, kein eigener
+// Puffer). Immer den ganzen Bereich: EEPROM.commit() löscht den Sektor und schreibt nur die angegebene Größe.
 static bool konfig_schreiben(const konfig::Daten& d) {
-  static uint8_t roh[konfig::EEPROM_GROESSE];
-  EEPROM.begin(sizeof roh);
-  for (size_t i = 0; i < sizeof roh; i++) roh[i] = EEPROM.read(i);
-  konfig::schreiben(d, roh);
-  for (size_t i = 0; i < sizeof roh; i++) EEPROM.write(i, roh[i]);
+  EEPROM.begin(konfig::EEPROM_GROESSE);
+  konfig::schreiben(d, EEPROM.getDataPtr());
   bool ok = EEPROM.commit();
-  for (size_t i = 0; ok && i < sizeof roh; i++) ok = EEPROM.read(i) == roh[i];
   EEPROM.end();
-  konfig::Daten zurueck;
-  return ok && konfig::laden(roh, sizeof roh, zurueck) == konfig::Quelle::FORMAT2 &&
-         memcmp(&zurueck, &d, sizeof d) == 0;
+  EEPROM.begin(konfig::EEPROM_GROESSE);  // liest den Flash neu
+  ok = ok && konfig::abgelegt(d, EEPROM.getConstDataPtr());
+  EEPROM.end();
+  return ok;
 }
 
 // Einstellungen laden: EEPROM gültig -> verwenden (Format 1 von v2 wird übernommen); sonst (oder mit
 // KONFIG_ERZWINGEN) Zugangsdaten aus secrets.h schreiben, falls plausibel – vorhandene Einstellungen bleiben.
 // Ohne beides bleibt das WLAN aus (Notzugang dann nur per USB).
 static void konfig_laden() {
-  static uint8_t roh[konfig::EEPROM_GROESSE];
-  EEPROM.begin(sizeof roh);
-  for (size_t i = 0; i < sizeof roh; i++) roh[i] = EEPROM.read(i);
-  EEPROM.end();
-  konfig::Quelle quelle = konfig::laden(roh, sizeof roh, kfg);
+  EEPROM.begin(konfig::EEPROM_GROESSE);
+  konfig::Quelle quelle = konfig::laden(EEPROM.getConstDataPtr(), konfig::EEPROM_GROESSE, kfg);
   bool im_eeprom = quelle != konfig::Quelle::KEINE;
 #ifdef KONFIG_ERZWINGEN
   bool schreiben = true;
@@ -163,13 +158,12 @@ static void konfig_laden() {
     kfg_quelle = quelle == konfig::Quelle::FORMAT2 ? "eeprom" : "eeprom-v1";
   } else {
     konfig::grundlage(kfg);  // keine Zugangsdaten: wenigstens Hostname/Ports definiert
-    return;
   }
-  // Beide Blöcke auf den Stand von kfg bringen (Übernahme aus Format 1, secrets.h, fehlende Format-1-Kopie)
-  static uint8_t soll[konfig::EEPROM_GROESSE];
-  memcpy(soll, roh, sizeof soll);
-  konfig::schreiben(kfg, soll);
-  if (memcmp(soll, roh, sizeof soll) != 0) konfig_schreiben(kfg);  // bei Schreibfehler gilt kfg trotzdem
+  // Beide Blöcke auf den Stand von kfg bringen (Übernahme aus Format 1, secrets.h, fehlende Format-1-Kopie);
+  // bei einem Schreibfehler gilt kfg für diesen Lauf trotzdem
+  bool aktuell = !kfg_ok || konfig::abgelegt(kfg, EEPROM.getConstDataPtr());
+  EEPROM.end();
+  if (!aktuell) konfig_schreiben(kfg);
 }
 
 static void info_beantworten() {
@@ -180,9 +174,9 @@ static void info_beantworten() {
     return;
   }
   char zeile[320];
-  snprintf(zeile, sizeof zeile,
-           "{\"name\":\"%s\",\"version\":\"%s\",\"laufzeit_s\":%lu,\"rssi\":%d,\"heap\":%u,"
-           "\"neustart\":\"%s\",\"notfall\":%s,\"sitzung\":%s,\"konfig\":\"%s\",\"signatur\":true}\n",
+  snprintf_P(zeile, sizeof zeile,
+             PSTR("{\"name\":\"%s\",\"version\":\"%s\",\"laufzeit_s\":%lu,\"rssi\":%d,\"heap\":%u,"
+                  "\"neustart\":\"%s\",\"notfall\":%s,\"sitzung\":%s,\"konfig\":\"%s\",\"signatur\":true}\n"),
            kfg.hostname, FW_VERSION, (unsigned long)(laufzeit_ms / 1000), WiFi.RSSI(), ESP.getFreeHeap(),
            ESP.getResetReason().c_str(), notfall_an ? "true" : "false", sitzung.connected() ? "true" : "false",
            kfg_quelle);
@@ -261,68 +255,64 @@ static void sitzung_pflegen() {
   if (sitzung.connected() && millis() - letzte_eingabe > kfg.sitzung_leerlauf_ms) sitzung.stop();
 }
 
-// Antwort auf ein "~config"-Kommando an den Client (nie an den Pi)
-static void antworten(const char* text) {
-  sitzung.write("\r\n", 2);
-  size_t n = strlen(text);
-  if (n) {
-    sitzung.write(text, n);
-    sitzung.write("\r\n", 2);
-  }
-}
+// Antwort auf ein "~config"-Kommando: zeilenweise direkt an den Client (nie an den Pi)
+static void an_client(void*, const char* p, size_t n) { sitzung.write(p, n); }
 
 static void kommando_ausfuehren(const char* zeile) {
-  static char text[1024];
   using config_cmd::Ergebnis;
+  config_cmd::Ausgabe aus(an_client, nullptr);
+  sitzung.write("\r\n", 2);
   if (neustart_geplant) {
-    antworten("Neustart läuft, keine Änderungen mehr");
-    return;
-  }
-  switch (config_cmd::ausfuehren(zeile, entwurf, kfg, text, sizeof text)) {
-    case Ergebnis::COMMIT: {
-      bool geaendert = false, neustart = false;
-      if (!config_cmd::commit_pruefen(entwurf, kfg, geaendert, neustart, text, sizeof text)) break;
-      if (!geaendert) {
-        snprintf(text, sizeof text, "Keine Änderungen");
-      } else if (notfallnetz_ueberschneidet(entwurf)) {
-        snprintf(text, sizeof text, "Fehler: Notfall-Netz überschneidet das Heimnetz, nichts gespeichert");
-      } else if (!konfig_schreiben(entwurf)) {
-        snprintf(text, sizeof text, "Fehler: EEPROM schreiben fehlgeschlagen, alte Einstellungen bleiben");
-      } else if (neustart) {
-        snprintf(text, sizeof text, "Gespeichert. Neustart in %lu s", (unsigned long)(NEUSTART_NACH_COMMIT_MS / 1000));
-        neustart_geplant = true;
-        neustart_ab = millis() + NEUSTART_NACH_COMMIT_MS;
-      } else {
-        kfg = entwurf;  // nur Zeiten/reboot_tage geändert: wirkt sofort
-        kfg_quelle = "eeprom";
-        snprintf(text, sizeof text, "Gespeichert, wirkt sofort");
+    aus(T("Neustart läuft, keine Änderungen mehr"));
+  } else {
+    switch (config_cmd::ausfuehren(zeile, entwurf, kfg, aus)) {
+      case Ergebnis::COMMIT: {
+        bool geaendert = false, neustart = false;
+        if (!config_cmd::commit_pruefen(entwurf, kfg, geaendert, neustart, aus)) break;
+        if (!geaendert) {
+          aus(T("Keine Änderungen"));
+        } else if (notfallnetz_ueberschneidet(entwurf)) {
+          aus(T("Fehler: Notfall-Netz überschneidet das Heimnetz, nichts gespeichert"));
+        } else if (!konfig_schreiben(entwurf)) {
+          aus(T("Fehler: EEPROM schreiben fehlgeschlagen, alte Einstellungen bleiben"));
+        } else if (neustart) {
+          aus(T("Gespeichert. Neustart in %lu s"), (unsigned long)(NEUSTART_NACH_COMMIT_MS / 1000));
+          neustart_geplant = true;
+          neustart_ab = millis() + NEUSTART_NACH_COMMIT_MS;
+        } else {
+          kfg = entwurf;  // nur Zeiten/reboot_tage geändert: wirkt sofort
+          kfg_quelle = "eeprom";
+          aus(T("Gespeichert, wirkt sofort"));
+        }
+        break;
       }
-      break;
+      case Ergebnis::VERWORFEN:
+        entwurf = kfg;
+        break;
+      default:
+        break;
     }
-    case Ergebnis::VERWORFEN:
-      entwurf = kfg;
-      break;
-    default:
-      break;
   }
-  antworten(text);
+  if (aus.geschrieben()) sitzung.write("\r\n", 2);
 }
 
 static void weiterleiten() {
-  static uint8_t ein[256], aus[512], gefiltert[256];
-  static uint8_t an_pi[sizeof gefiltert + config_cmd::PRAEFIX_LAENGE], echo[3 * sizeof gefiltert + 32];
+  // Telnet -> Pi in Häppchen von HAPPEN Bytes (reicht bei 115200 Baud), damit die Puffer der Weiche klein bleiben
+  static const size_t HAPPEN = 64;
+  static uint8_t ein[256], aus[512];
+  static uint8_t an_pi[HAPPEN + config_cmd::PRAEFIX_LAENGE], echo[3 * HAPPEN + 32];
   // Telnet -> Pi (Zeilen mit "~config" gehen an den ESP)
   if (sitzung.connected()) {
     size_t n = sitzung.available();
     if (n) {
-      if (n > sizeof(ein)) n = sizeof(ein);
+      if (n > HAPPEN) n = HAPPEN;
       n = sitzung.read(ein, n);
-      size_t k = filter.eingang(ein, n, gefiltert);
+      size_t k = filter.eingang(ein, n, ein);  // an Ort und Stelle: Ausgabe nie länger als Eingabe
       size_t pos = 0;
       while (pos < k) {
         size_t n_pi, n_echo;
         config_cmd::Weiche::Ereignis ereignis;
-        pos += weiche.verarbeiten(gefiltert + pos, k - pos, an_pi, n_pi, echo, n_echo, ereignis);
+        pos += weiche.verarbeiten(ein + pos, k - pos, an_pi, n_pi, echo, n_echo, ereignis);
         if (n_pi) Serial.write(an_pi, n_pi);
         if (n_echo) sitzung.write(echo, n_echo);
         if (ereignis == config_cmd::Weiche::Ereignis::KOMMANDO) kommando_ausfuehren(weiche.zeile());

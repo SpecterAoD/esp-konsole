@@ -287,6 +287,13 @@ inline void schreiben(const Daten& d, uint8_t* roh) {
   memcpy(roh + ADR_V2, &d, sizeof d);
 }
 
+// Stehen beide Blöcke schon genau so in den rohen EEPROM-Bytes, wie schreiben(d, …) sie ablegen würde?
+inline bool abgelegt(const Daten& d, const uint8_t* roh) {
+  DatenV1 a;
+  v1_aus(d, a);
+  return memcmp(roh + ADR_V1, &a, sizeof a) == 0 && memcmp(roh + ADR_V2, &d, sizeof d) == 0;
+}
+
 // Braucht der Wechsel von alt nach neu einen Neustart? Nur die Zeiten und reboot_tage wirken sofort.
 inline bool neustart_noetig(const Daten& alt, const Daten& neu) {
   Daten a = alt, b = neu;

@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include "config_cmd.h"
+#include "telnet_filter.h"
 
 using namespace config_cmd;
 
@@ -34,6 +35,9 @@ struct Lauf {
     for (char c : s) senden(std::string(1, c));
   }
 };
+
+// Senke für Ausgabe: sammelt in einem std::string
+static void sammeln(void* ctx, const char* p, size_t n) { static_cast<std::string*>(ctx)->append(p, n); }
 
 int main() {
   // ---- Weiche ----
@@ -101,33 +105,35 @@ int main() {
   konfig::Daten aktiv;
   konfig::fuellen(aktiv, "MeinWLAN", "geheim-wlan-123", "Notfall", "abcdefghijklmnopqrstuvwx", "ota-passwort-24-zeichen!");
   konfig::Daten e = aktiv;
-  char t[1024];
+  std::string t;
+  Ausgabe aus(sammeln, &t);
 
   pruefe("set ändert nur den Entwurf",
-         ausfuehren("set wlan_name \"Mein WLAN\"", e, aktiv, t, sizeof t) == Ergebnis::GEAENDERT &&
+         ausfuehren("set wlan_name \"Mein WLAN\"", e, aktiv, aus) == Ergebnis::GEAENDERT &&
              strcmp(e.wlan_name, "Mein WLAN") == 0 && strcmp(aktiv.wlan_name, "MeinWLAN") == 0);
   pruefe("Anführungszeichen entfernt ('...')",
-         ausfuehren("set wlan_pass 'mit leer zeichen'", e, aktiv, t, sizeof t) == Ergebnis::GEAENDERT &&
+         ausfuehren("set wlan_pass 'mit leer zeichen'", e, aktiv, aus) == Ergebnis::GEAENDERT &&
              strcmp(e.wlan_passwort, "mit leer zeichen") == 0);
   pruefe("IP in Anführungszeichen",
-         ausfuehren("set notfall_ip \"192.168.4.2\"", e, aktiv, t, sizeof t) == Ergebnis::GEAENDERT &&
+         ausfuehren("set notfall_ip \"192.168.4.2\"", e, aktiv, aus) == Ergebnis::GEAENDERT &&
              e.notfall_ip[3] == 2);
   pruefe("Passwort zu kurz",
-         ausfuehren("set notfall_pass kurz", e, aktiv, t, sizeof t) == Ergebnis::FEHLER &&
+         ausfuehren("set notfall_pass kurz", e, aktiv, aus) == Ergebnis::FEHLER &&
              strcmp(e.notfall_passwort, aktiv.notfall_passwort) == 0);
-  pruefe("Port doppelt abgelehnt", ausfuehren("set info_port 23", e, aktiv, t, sizeof t) == Ergebnis::FEHLER);
-  pruefe("Port mit Zusatz abgelehnt", ausfuehren("set telnet_port 23x", e, aktiv, t, sizeof t) == Ergebnis::FEHLER);
-  pruefe("negativer Wert abgelehnt", ausfuehren("set reboot_tage -1", e, aktiv, t, sizeof t) == Ergebnis::FEHLER);
+  pruefe("Port doppelt abgelehnt", ausfuehren("set info_port 23", e, aktiv, aus) == Ergebnis::FEHLER);
+  pruefe("Port mit Zusatz abgelehnt", ausfuehren("set telnet_port 23x", e, aktiv, aus) == Ergebnis::FEHLER);
+  pruefe("negativer Wert abgelehnt", ausfuehren("set reboot_tage -1", e, aktiv, aus) == Ergebnis::FEHLER);
   pruefe("IP mit Zusatz abgelehnt",
-         ausfuehren("set notfall_ip 192.168.4.1abc", e, aktiv, t, sizeof t) == Ergebnis::FEHLER);
-  pruefe("Maske /16 abgelehnt", ausfuehren("set notfall_maske 255.255.0.0", e, aktiv, t, sizeof t) == Ergebnis::FEHLER);
+         ausfuehren("set notfall_ip 192.168.4.1abc", e, aktiv, aus) == Ergebnis::FEHLER);
+  pruefe("Maske /16 abgelehnt", ausfuehren("set notfall_maske 255.255.0.0", e, aktiv, aus) == Ergebnis::FEHLER);
   pruefe("Zeit in Sekunden",
-         ausfuehren("set notfall_nach_s 300", e, aktiv, t, sizeof t) == Ergebnis::GEAENDERT && e.notfall_nach_ms == 300000);
-  pruefe("Zeit außerhalb", ausfuehren("set heim_stabil_s 5", e, aktiv, t, sizeof t) == Ergebnis::FEHLER);
-  pruefe("unbekannter Name", ausfuehren("set dns 1.1.1.1", e, aktiv, t, sizeof t) == Ergebnis::FEHLER);
-  pruefe("unbekanntes Kommando", ausfuehren("reset", e, aktiv, t, sizeof t) == Ergebnis::FEHLER);
+         ausfuehren("set notfall_nach_s 300", e, aktiv, aus) == Ergebnis::GEAENDERT && e.notfall_nach_ms == 300000);
+  pruefe("Zeit außerhalb", ausfuehren("set heim_stabil_s 5", e, aktiv, aus) == Ergebnis::FEHLER);
+  pruefe("unbekannter Name", ausfuehren("set dns 1.1.1.1", e, aktiv, aus) == Ergebnis::FEHLER);
+  pruefe("unbekanntes Kommando", ausfuehren("reset", e, aktiv, aus) == Ergebnis::FEHLER);
 
-  ausfuehren("show", e, aktiv, t, sizeof t);
+  t.clear();
+  ausfuehren("show", e, aktiv, aus);
   std::string s = t;
   pruefe("show: Passwörter nur als Länge", s.find("geheim") == std::string::npos &&
                                                s.find("mit leer") == std::string::npos &&
@@ -139,23 +145,23 @@ int main() {
   bool geaendert, neustart;
   konfig::Daten c = aktiv;
   c.crc = 0;  // muss neu berechnet werden
-  pruefe("commit ohne Änderung", commit_pruefen(c, aktiv, geaendert, neustart, t, sizeof t) && !geaendert && !neustart);
+  pruefe("commit ohne Änderung", commit_pruefen(c, aktiv, geaendert, neustart, aus) && !geaendert && !neustart);
   pruefe("commit mit WLAN-Änderung: gültig, Neustart",
-         commit_pruefen(e, aktiv, geaendert, neustart, t, sizeof t) && geaendert && neustart && konfig::gueltig(e));
+         commit_pruefen(e, aktiv, geaendert, neustart, aus) && geaendert && neustart && konfig::gueltig(e));
   c = aktiv;
-  ausfuehren("set leerlauf_min 5", c, aktiv, t, sizeof t);
+  ausfuehren("set leerlauf_min 5", c, aktiv, aus);
   pruefe("commit nur Leerlauf: ohne Neustart",
-         commit_pruefen(c, aktiv, geaendert, neustart, t, sizeof t) && geaendert && !neustart &&
+         commit_pruefen(c, aktiv, geaendert, neustart, aus) && geaendert && !neustart &&
              c.sitzung_leerlauf_ms == 300000);
   c = aktiv;
-  ausfuehren("set ota_pass neues-ota-passwort", c, aktiv, t, sizeof t);
-  pruefe("commit OTA-Passwort: Neustart", commit_pruefen(c, aktiv, geaendert, neustart, t, sizeof t) && neustart);
+  ausfuehren("set ota_pass neues-ota-passwort", c, aktiv, aus);
+  pruefe("commit OTA-Passwort: Neustart", commit_pruefen(c, aktiv, geaendert, neustart, aus) && neustart);
   konfig::Daten leer;
   konfig::grundlage(leer);
   konfig::Daten le = leer;
-  ausfuehren("set wlan_name Nur-Name", le, leer, t, sizeof t);
-  pruefe("commit unvollständig abgelehnt", !commit_pruefen(le, leer, geaendert, neustart, t, sizeof t));
-  pruefe("discard", ausfuehren("discard", e, aktiv, t, sizeof t) == Ergebnis::VERWORFEN);
+  ausfuehren("set wlan_name Nur-Name", le, leer, aus);
+  pruefe("commit unvollständig abgelehnt", !commit_pruefen(le, leer, geaendert, neustart, aus));
+  pruefe("discard", ausfuehren("discard", e, aktiv, aus) == Ergebnis::VERWORFEN);
 
   // ---- Hilfsfunktionen ----
   char b[32];
@@ -167,10 +173,20 @@ int main() {
   pruefe("ip_lesen gültig", ip_lesen("10.0.0.255", ip) && ip[3] == 255);
   pruefe("ip_lesen 256", !ip_lesen("10.0.0.256", ip));
   pruefe("ip_lesen zu kurz", !ip_lesen("10.0.0", ip));
-  char klein[8];
-  Ausgabe a(klein, sizeof klein);
-  a("%s", "viel zu langer Text");
-  pruefe("Ausgabe schneidet sicher ab", strlen(klein) == 7);
+  std::string lang;
+  Ausgabe a(sammeln, &lang);
+  a("%s", std::string(300, 'x').c_str());
+  pruefe("Ausgabe schneidet sicher ab (127 Zeichen je Aufruf)", lang.size() == 127 && a.geschrieben() == 127);
+  t.clear();
+  ausfuehren("help", e, aktiv, aus);
+  pruefe("Hilfe vollständig (zeilenweise)", t.find("reboot_tage") != std::string::npos &&
+                                                t.find("~config discard") != std::string::npos);
+
+  // Telnet-Filter an Ort und Stelle (main.cpp filtert im Eingangspuffer)
+  telnet::Filter f;
+  uint8_t puf[] = {'a', 0xFF, 0xFD, 0x01, 'b', '\r', 0, 'c', 0xFF, 0xFF};
+  size_t k = f.eingang(puf, sizeof puf, puf);
+  pruefe("Filter an Ort und Stelle", k == 5 && memcmp(puf, "ab\rc\xff", 5) == 0);
 
   printf("%d Fehler\n", fehler);
   return fehler ? 1 : 0;

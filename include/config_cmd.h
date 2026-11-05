@@ -16,6 +16,19 @@
 
 #include "konfig.h"
 
+// Texte und Formatangaben: auf dem ESP im Flash (sonst belegen sie RAM), auf dem Laptop normale Zeichenketten.
+// Nur für Formatangaben; Werte für %s kommen immer aus dem RAM.
+#ifdef ARDUINO
+#include <pgmspace.h>
+#define T(s) PSTR(s)
+#define AUSGABE_VSNPRINTF vsnprintf_P
+#define AUSGABE_FORMAT
+#else
+#define T(s) (s)
+#define AUSGABE_VSNPRINTF vsnprintf
+#define AUSGABE_FORMAT __attribute__((format(printf, 2, 3)))
+#endif
+
 namespace config_cmd {
 
 const char PRAEFIX[] = "~config";
@@ -25,6 +38,7 @@ const size_t MAX_ZEILE = 160;  // längere Kommandozeilen werden verworfen
 class Weiche {
  public:
   // Puffergrößen für verarbeiten(): pi mindestens n + PRAEFIX_LAENGE, echo mindestens 3 * n + 32
+  // (n klein halten, z. B. 64 Bytes je Aufruf, dann reichen kleine Puffer)
   enum class Ereignis { KEINS, KOMMANDO };
 
   void zuruecksetzen() {
@@ -138,24 +152,29 @@ enum class Ergebnis {
   VERWORFEN,   // Aufrufer: Entwurf = aktive Einstellungen
 };
 
+// Ausgabe an den Client: jede Formatierung (höchstens eine Zeile, max. 127 Zeichen) geht sofort an die Senke,
+// es gibt keinen großen Textpuffer.
 class Ausgabe {
  public:
-  Ausgabe(char* p, size_t n) : p_(p), n_(n) {
-    if (n_) p_[0] = 0;
-  }
-  void operator()(const char* fmt, ...) __attribute__((format(printf, 2, 3))) {
-    if (k_ + 1 >= n_) return;
+  using Senke = void (*)(void* ctx, const char* p, size_t n);
+  Ausgabe(Senke senke, void* ctx) : senke_(senke), ctx_(ctx) {}
+  void operator()(const char* fmt, ...) AUSGABE_FORMAT {
+    char zeile[128];
     va_list a;
     va_start(a, fmt);
-    int r = vsnprintf(p_ + k_, n_ - k_, fmt, a);
+    int r = AUSGABE_VSNPRINTF(zeile, sizeof zeile, fmt, a);
     va_end(a);
-    if (r > 0) k_ = (k_ + size_t(r) < n_) ? k_ + size_t(r) : n_ - 1;
+    if (r <= 0) return;
+    size_t n = size_t(r) < sizeof zeile ? size_t(r) : sizeof zeile - 1;
+    senke_(ctx_, zeile, n);
+    geschrieben_ += n;
   }
+  size_t geschrieben() const { return geschrieben_; }
 
  private:
-  char* p_;
-  size_t n_;
-  size_t k_ = 0;
+  Senke senke_;
+  void* ctx_;
+  size_t geschrieben_ = 0;
 };
 
 // Leerzeichen am Anfang/Ende weg, umschließende "…" oder '…' weg (für Werte mit Leerzeichen)
@@ -205,41 +224,41 @@ inline bool text_setzen(char* ziel, size_t groesse, const char* wert) {
 }
 
 inline void hilfe(Ausgabe& aus) {
-  aus("~config show                  Entwurf anzeigen (* = noch nicht gespeichert)\r\n"
-      "~config set <name> <wert>     im Entwurf ändern; Werte mit Leerzeichen in \"...\"\r\n"
-      "~config commit                prüfen, speichern, bei Bedarf neu starten\r\n"
-      "~config discard               Entwurf verwerfen\r\n"
-      "Namen: wlan_name wlan_pass notfall_name notfall_pass ota_pass hostname\r\n"
-      "       telnet_port info_port ota_port notfall_kanal notfall_ip notfall_maske\r\n"
-      "       notfall_nach_s heim_stabil_s leerlauf_min reboot_tage");
+  aus(T("~config show                  Entwurf anzeigen (* = noch nicht gespeichert)\r\n"));
+  aus(T("~config set <name> <wert>     im Entwurf ändern; Werte mit Leerzeichen in \"...\"\r\n"));
+  aus(T("~config commit                prüfen, speichern, bei Bedarf neu starten\r\n"));
+  aus(T("~config discard               Entwurf verwerfen\r\n"));
+  aus(T("Namen: wlan_name wlan_pass notfall_name notfall_pass ota_pass hostname\r\n"));
+  aus(T("       telnet_port info_port ota_port notfall_kanal notfall_ip notfall_maske\r\n"));
+  aus(T("       notfall_nach_s heim_stabil_s leerlauf_min reboot_tage"));
 }
 
 inline void zeigen(const konfig::Daten& e, const konfig::Daten& a, Ausgabe& aus) {
   auto m = [](bool geaendert) { return geaendert ? '*' : ' '; };
   auto ip = [](const uint8_t* p, char* t) { snprintf(t, 16, "%u.%u.%u.%u", p[0], p[1], p[2], p[3]); };
   char t1[16], t2[16];
-  aus("%c wlan_name      %s\r\n", m(strcmp(e.wlan_name, a.wlan_name)), e.wlan_name);
-  aus("%c wlan_pass      (%u Zeichen)\r\n", m(strcmp(e.wlan_passwort, a.wlan_passwort)),
+  aus(T("%c wlan_name      %s\r\n"), m(strcmp(e.wlan_name, a.wlan_name)), e.wlan_name);
+  aus(T("%c wlan_pass      (%u Zeichen)\r\n"), m(strcmp(e.wlan_passwort, a.wlan_passwort)),
       unsigned(strlen(e.wlan_passwort)));
-  aus("%c notfall_name   %s\r\n", m(strcmp(e.notfall_name, a.notfall_name)), e.notfall_name);
-  aus("%c notfall_pass   (%u Zeichen)\r\n", m(strcmp(e.notfall_passwort, a.notfall_passwort)),
+  aus(T("%c notfall_name   %s\r\n"), m(strcmp(e.notfall_name, a.notfall_name)), e.notfall_name);
+  aus(T("%c notfall_pass   (%u Zeichen)\r\n"), m(strcmp(e.notfall_passwort, a.notfall_passwort)),
       unsigned(strlen(e.notfall_passwort)));
-  aus("%c ota_pass       (%u Zeichen)\r\n", m(strcmp(e.ota_passwort, a.ota_passwort)),
+  aus(T("%c ota_pass       (%u Zeichen)\r\n"), m(strcmp(e.ota_passwort, a.ota_passwort)),
       unsigned(strlen(e.ota_passwort)));
-  aus("%c hostname       %s\r\n", m(strcmp(e.hostname, a.hostname)), e.hostname);
-  aus("%c telnet_port    %u\r\n", m(e.telnet_port != a.telnet_port), e.telnet_port);
-  aus("%c info_port      %u\r\n", m(e.info_port != a.info_port), e.info_port);
-  aus("%c ota_port       %u\r\n", m(e.ota_port != a.ota_port), e.ota_port);
-  aus("%c notfall_kanal  %u\r\n", m(e.notfall_kanal != a.notfall_kanal), e.notfall_kanal);
+  aus(T("%c hostname       %s\r\n"), m(strcmp(e.hostname, a.hostname)), e.hostname);
+  aus(T("%c telnet_port    %u\r\n"), m(e.telnet_port != a.telnet_port), e.telnet_port);
+  aus(T("%c info_port      %u\r\n"), m(e.info_port != a.info_port), e.info_port);
+  aus(T("%c ota_port       %u\r\n"), m(e.ota_port != a.ota_port), e.ota_port);
+  aus(T("%c notfall_kanal  %u\r\n"), m(e.notfall_kanal != a.notfall_kanal), e.notfall_kanal);
   ip(e.notfall_ip, t1);
   ip(e.notfall_maske, t2);
-  aus("%c notfall_ip     %s\r\n", m(memcmp(e.notfall_ip, a.notfall_ip, 4)), t1);
-  aus("%c notfall_maske  %s\r\n", m(memcmp(e.notfall_maske, a.notfall_maske, 4)), t2);
-  aus("%c notfall_nach_s %lu\r\n", m(e.notfall_nach_ms != a.notfall_nach_ms), (unsigned long)(e.notfall_nach_ms / 1000));
-  aus("%c heim_stabil_s  %lu\r\n", m(e.heim_stabil_ms != a.heim_stabil_ms), (unsigned long)(e.heim_stabil_ms / 1000));
-  aus("%c leerlauf_min   %lu\r\n", m(e.sitzung_leerlauf_ms != a.sitzung_leerlauf_ms),
+  aus(T("%c notfall_ip     %s\r\n"), m(memcmp(e.notfall_ip, a.notfall_ip, 4)), t1);
+  aus(T("%c notfall_maske  %s\r\n"), m(memcmp(e.notfall_maske, a.notfall_maske, 4)), t2);
+  aus(T("%c notfall_nach_s %lu\r\n"), m(e.notfall_nach_ms != a.notfall_nach_ms), (unsigned long)(e.notfall_nach_ms / 1000));
+  aus(T("%c heim_stabil_s  %lu\r\n"), m(e.heim_stabil_ms != a.heim_stabil_ms), (unsigned long)(e.heim_stabil_ms / 1000));
+  aus(T("%c leerlauf_min   %lu\r\n"), m(e.sitzung_leerlauf_ms != a.sitzung_leerlauf_ms),
       (unsigned long)(e.sitzung_leerlauf_ms / 60000));
-  aus("%c reboot_tage    %u%s", m(e.reboot_tage != a.reboot_tage), e.reboot_tage, e.reboot_tage ? "" : " (nie)");
+  aus(T("%c reboot_tage    %u%s"), m(e.reboot_tage != a.reboot_tage), e.reboot_tage, e.reboot_tage ? "" : " (nie)");
 }
 
 // Ein Wert in den Entwurf; false + Meldung bei ungültigem Namen oder Wert
@@ -261,14 +280,14 @@ inline bool setzen(konfig::Daten& e, const char* name, const char* wert, Ausgabe
   for (const Text& t : texte) {
     if (strcmp(name, t.name) != 0) continue;
     if (l < t.min || l > t.max || platzhalter(wert)) {
-      aus("Fehler: %s braucht %u-%u Zeichen", name, unsigned(t.min), unsigned(t.max));
+      aus(T("Fehler: %s braucht %u-%u Zeichen"), name, unsigned(t.min), unsigned(t.max));
       return false;
     }
     return text_setzen(t.ziel, t.groesse, wert);
   }
   if (strcmp(name, "hostname") == 0) {
     if (!hostname_ok(wert)) {
-      aus("Fehler: hostname 1-32 Zeichen, nur a-z A-Z 0-9 und '-'");
+      aus(T("Fehler: hostname 1-32 Zeichen, nur a-z A-Z 0-9 und '-'"));
       return false;
     }
     return text_setzen(e.hostname, sizeof e.hostname, wert);
@@ -278,12 +297,12 @@ inline bool setzen(konfig::Daten& e, const char* name, const char* wert, Ausgabe
   for (int i = 0; i < 3; i++) {
     if (strcmp(name, port_namen[i]) != 0) continue;
     if (!zahl_lesen(wert, 1, 65535, z)) {
-      aus("Fehler: %s 1-65535", name);
+      aus(T("Fehler: %s 1-65535"), name);
       return false;
     }
     for (int k = 0; k < 3; k++)
       if (k != i && *ports[k] == z) {
-        aus("Fehler: Port %lu schon für %s vergeben", (unsigned long)z, port_namen[k]);
+        aus(T("Fehler: Port %lu schon für %s vergeben"), (unsigned long)z, port_namen[k]);
         return false;
       }
     *ports[i] = uint16_t(z);
@@ -291,7 +310,7 @@ inline bool setzen(konfig::Daten& e, const char* name, const char* wert, Ausgabe
   }
   if (strcmp(name, "notfall_kanal") == 0) {
     if (!zahl_lesen(wert, 1, 13, z)) {
-      aus("Fehler: notfall_kanal 1-13");
+      aus(T("Fehler: notfall_kanal 1-13"));
       return false;
     }
     e.notfall_kanal = uint8_t(z);
@@ -301,13 +320,13 @@ inline bool setzen(konfig::Daten& e, const char* name, const char* wert, Ausgabe
     bool ist_ip = name[8] == 'i';
     uint8_t v[4], ip[4], maske[4];
     if (!ip_lesen(wert, v)) {
-      aus("Fehler: %s im Format a.b.c.d", name);
+      aus(T("Fehler: %s im Format a.b.c.d"), name);
       return false;
     }
     memcpy(ip, ist_ip ? v : e.notfall_ip, 4);
     memcpy(maske, ist_ip ? e.notfall_maske : v, 4);
     if (!notfall_netz_ok(ip, maske)) {
-      aus("Fehler: Notfall-Netz ungültig (Maske /24 bis /30, Adresse weder Netz- noch Broadcast-Adresse)");
+      aus(T("Fehler: Notfall-Netz ungültig (Maske /24 bis /30, Adresse weder Netz- noch Broadcast-Adresse)"));
       return false;
     }
     memcpy(ist_ip ? e.notfall_ip : e.notfall_maske, v, 4);
@@ -325,7 +344,7 @@ inline bool setzen(konfig::Daten& e, const char* name, const char* wert, Ausgabe
   for (const Zeit& t : zeiten) {
     if (strcmp(name, t.name) != 0) continue;
     if (!zahl_lesen(wert, t.min, t.max, z)) {
-      aus("Fehler: %s %lu-%lu", name, (unsigned long)t.min, (unsigned long)t.max);
+      aus(T("Fehler: %s %lu-%lu"), name, (unsigned long)t.min, (unsigned long)t.max);
       return false;
     }
     *t.ziel = z * t.faktor;
@@ -333,20 +352,18 @@ inline bool setzen(konfig::Daten& e, const char* name, const char* wert, Ausgabe
   }
   if (strcmp(name, "reboot_tage") == 0) {
     if (!zahl_lesen(wert, 0, REBOOT_MAX_TAGE, z)) {
-      aus("Fehler: reboot_tage 0-%lu (0 = nie)", (unsigned long)REBOOT_MAX_TAGE);
+      aus(T("Fehler: reboot_tage 0-%lu (0 = nie)"), (unsigned long)REBOOT_MAX_TAGE);
       return false;
     }
     e.reboot_tage = uint16_t(z);
     return true;
   }
-  aus("Fehler: unbekannter Name '%s' (~config help)", name);
+  aus(T("Fehler: unbekannter Name '%s' (~config help)"), name);
   return false;
 }
 
 // Führt die Zeile nach "~config" aus. entwurf = Arbeitskopie der Sitzung, aktiv = laufende Einstellungen.
-inline Ergebnis ausfuehren(const char* zeile, konfig::Daten& entwurf, const konfig::Daten& aktiv, char* text,
-                           size_t groesse) {
-  Ausgabe aus(text, groesse);
+inline Ergebnis ausfuehren(const char* zeile, konfig::Daten& entwurf, const konfig::Daten& aktiv, Ausgabe& aus) {
   char kopie[MAX_ZEILE + 1];
   wert_bereinigen(zeile, kopie, sizeof kopie);
   char* cmd = kopie;
@@ -369,37 +386,36 @@ inline Ergebnis ausfuehren(const char* zeile, konfig::Daten& entwurf, const konf
   if (strcmp(cmd, "set") == 0) {
     char* wert = strchr(rest, ' ');
     if (*rest == 0 || !wert) {
-      aus("Syntax: ~config set <name> <wert>");
+      aus(T("Syntax: ~config set <name> <wert>"));
       return Ergebnis::FEHLER;
     }
     *wert++ = 0;
     char bereinigt[MAX_ZEILE + 1];
     wert_bereinigen(wert, bereinigt, sizeof bereinigt);
     if (!setzen(entwurf, rest, bereinigt, aus)) return Ergebnis::FEHLER;
-    aus("%s geändert (noch nicht gespeichert: ~config commit)", rest);
+    aus(T("%s geändert (noch nicht gespeichert: ~config commit)"), rest);
     return Ergebnis::GEAENDERT;
   }
   if (strcmp(cmd, "commit") == 0) return Ergebnis::COMMIT;
   if (strcmp(cmd, "discard") == 0) {
-    aus("Entwurf verworfen");
+    aus(T("Entwurf verworfen"));
     return Ergebnis::VERWORFEN;
   }
-  aus("Fehler: unbekanntes Kommando '%s' (~config help)", cmd);
+  aus(T("Fehler: unbekanntes Kommando '%s' (~config help)"), cmd);
   return Ergebnis::FEHLER;
 }
 
 // Für commit: Entwurf vollständig prüfen und Prüfsumme setzen. false + Meldung, wenn er nicht gespeichert
 // werden darf. Ist nichts geändert, liefert es true mit geaendert = false.
 inline bool commit_pruefen(konfig::Daten& entwurf, const konfig::Daten& aktiv, bool& geaendert, bool& neustart,
-                           char* text, size_t groesse) {
-  Ausgabe aus(text, groesse);
+                           Ausgabe& aus) {
   entwurf.magie = konfig::MAGIE;
   entwurf.format = konfig::FORMAT;
   entwurf.crc = konfig::pruefsumme(entwurf);
   geaendert = memcmp(&entwurf, &aktiv, sizeof entwurf) != 0;
   neustart = geaendert && konfig::neustart_noetig(aktiv, entwurf);
   if (!konfig::gueltig(entwurf)) {
-    aus("Fehler: Einstellungen unvollständig oder ungültig, nichts gespeichert");
+    aus(T("Fehler: Einstellungen unvollständig oder ungültig, nichts gespeichert"));
     return false;
   }
   return true;
